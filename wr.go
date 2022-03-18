@@ -48,12 +48,8 @@ func start(c *cli.Context) error {
 	backendPath := path.Join(basePath, organizationName, projectName, "backend")
 	frontendPath := path.Join(basePath, organizationName, projectName, "frontend")
 
-	// TODO: get hash of all migration contents
-	hash, err := MD5AllString(path.Join(backendPath, "migrations"))
-	checkError(err, "error getting hash of migrations")
-	fmt.Println("hash of migrations:", hash)
-	// TODO: save hash of all migration contents if not exist + run migration
 	// TODO: if hash is different, run migrations + convert plugin
+
 	// TODO: watch migrations folder
 	// TODO: watch custom_schema.grapql if changed run convert_plugin
 	// TODO:
@@ -61,6 +57,24 @@ func start(c *cli.Context) error {
 	watch(c, backendPath, frontendPath)
 
 	return nil
+}
+
+func runMigrations(backendPath string) {
+	migrationsPath := path.Join(backendPath, "migrations")
+	migrationsHashPath := path.Join(migrationsPath, ".wr")
+	nextMigrationHash, err := MD5AllString(migrationsPath)
+	checkError(err, "error getting hash of migrations")
+
+	// TODO: get hash of all migration contents
+	currentMigrationsHash, err := os.ReadFile(migrationsHashPath)
+
+	// fmt.Println("hash of migrations:", hash)
+	// TODO: save hash of all migration contents if not exist + run migration
+	if string(currentMigrationsHash) != nextMigrationHash {
+		// TODO: run migration here + write new hash to file
+		err = os.WriteFile(migrationsHashPath, []byte(nextMigrationHash), 0o644)
+		checkError(err, "error writing hash of migrations")
+	}
 }
 
 func watch(c *cli.Context, backendPath, frontendPath string) {
