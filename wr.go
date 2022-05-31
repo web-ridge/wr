@@ -1,25 +1,40 @@
 package main
 
 import (
-	"bytes"
 	"crypto/md5"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
+
+	"github.com/gen2brain/beeep"
+	"github.com/web-ridge/wr/helpers"
+
+	_ "github.com/joho/godotenv/autoload"
 
 	"github.com/fsnotify/fsnotify"
-
+	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
 )
 
+// https://stackoverflow.com/questions/36419054/go-projects-main-goroutine-sleep-forever
+var (
+	quit    = make(chan bool)
+	restart = make(chan bool)
+)
+
 func main() {
+	// let us have colored logs
+	helpers.ConfigureLogger()
+
 	app := &cli.App{
 		//Flags: []cli.Flag {
 		//	&cli.StringFlag{
@@ -35,57 +50,166 @@ func main() {
 
 	err := app.Run(os.Args)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err).Msg("can not run app")
 	}
+
+	// to quit program from somewhere else use close(quit)
+	<-quit
 }
 
 func start(c *cli.Context) error {
-	organizationName, projectName, basePath := getPathInformation()
-	uniqueName := organizationName + "-" + projectName
-	runLocalCommand("docker-compose up -d -p " + uniqueName)
-	fmt.Println("We're watching for changes in migrations and custom graphql")
+	fmt.Println("               _     _____  _     _            \n              | |   |  __ \\(_)   | |           \n __      _____| |__ | |__) |_  __| | __ _  ___ \n \\ \\ /\\ / / _ \\ '_ \\|  _  /| |/ _` |/ _` |/ _ \\\n  \\ V  V /  __/ |_) | | \\ \\| | (_| | (_| |  __/\n   \\_/\\_/ \\___|_.__/|_|  \\_\\_|\\__,_|\\__, |\\___|\n                                     __/ |     \n                                    |___/   ") //nolint:lll
+	fmt.Println("")
 
-	backendPath := path.Join(basePath, organizationName, projectName, "backend")
-	frontendPath := path.Join(basePath, organizationName, projectName, "frontend")
+	notify("test", "test")
 
-	// TODO: if hash is different, run migrations + convert plugin
+	backendPath, err := os.Getwd()
+	checkError("cant get current dir", err)
+	startPath := filepath.Dir(backendPath)
+	directories := strings.Split(startPath, "/")
+	organizationName := directories[len(directories)-2]
 
-	// TODO: watch migrations folder
-	// TODO: watch custom_schema.grapql if changed run convert_plugin
-	// TODO:
-	//
-	watch(c, backendPath, frontendPath)
+	log.Debug().Str("organization", organizationName).Msg("starting backend and dependencies")
+
+	frontendPath := path.Join(startPath, "frontend")
+
+	// first we start the database
+	go startDbInDocker()
+
+	// wait till the db is started
+	time.Sleep(1 * time.Second)
+	db := helpers.WaitForDatabase()
+
+	dropDatabase(db)
+	runMigrations()
+
+	runSeeder()
+	runConvertPlugin()
+
+	// start watching migrations/code
+	go watch(db, backendPath, frontendPath)
+
+	// wait for restarts
+	go func() {
+		existingServer := startServerInBackground(false)
+		for <-restart {
+			fmt.Println("restart received!")
+			stopServer(existingServer)
+			fmt.Println("stopped server")
+			existingServer = startServerInBackground(true)
+		}
+	}()
 
 	return nil
 }
 
-func runMigrations(backendPath string) {
-	migrationsPath := path.Join(backendPath, "migrations")
+func notify(title, message string) {
+	err := beeep.Notify(title, message, "assets/information.png")
+	checkError("could not notify", err)
+}
+
+func stopServer(existingServer *exec.Cmd) {
+	// https://stackoverflow.com/a/68179972/2508481
+	// Send kill signal to the process group instead of single process (it gets the same value as the PID, only negative)
+	err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL)
+	checkError("can not stop server", err)
+}
+
+func startServerInBackground(restart bool) *exec.Cmd {
+	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	// https://stackoverflow.com/a/68179972/2508481
+	// Request the OS to assign process group to the new process, to which all its children will belong
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	go func() {
+		err := cmd.Run()
+		checkServerError(err)
+	}()
+
+	return cmd
+}
+
+func checkServerError(err error) {
+	if err != nil && strings.Contains(err.Error(), "signal: killed") {
+		return
+	}
+	checkError("failed to run server", err)
+}
+
+func runMigrations() {
+	cmd := exec.Command("go", "run", "migrate.go")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to run migrations", err)
+	return
+}
+
+func dropDatabase(db *sql.DB) {
+	name := os.Getenv("DATABASE_NAME")
+	var err error
+	_, err = db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%v`", name))
+	checkError("could not drop database", err)
+	_, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%v`", name))
+	checkError("could not create database", err)
+}
+
+func runConvertPlugin() {
+	log.Debug().Msg("start convert/convert.go")
+
+	cmd := exec.Command("/bin/sh", "-c", "cd convert", "go", "run", "convert.go")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to run convert/convert.go", err)
+
+	log.Debug().Msg("✅ done convert/convert.go")
+}
+
+func runRelayGenerator(backendPath string) {
+}
+
+func runSeeder() {
+	log.Debug().Msg("start seed/seed.go")
+
+	cmd := exec.Command("/bin/sh", "-c", "cd seed", "go", "run", "seed.go")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to run seed/seed.go", err)
+
+	log.Debug().Msg("✅ done seed/seed.go")
+}
+
+func haveMigrationsChanged() bool {
+	migrationsPath := path.Join("./")
 	migrationsHashPath := path.Join(migrationsPath, ".wr")
 	nextMigrationHash, err := MD5AllString(migrationsPath)
-	checkError(err, "error getting hash of migrations")
+	checkError("error getting hash of migrations", err)
 
 	// TODO: get hash of all migration contents
 	currentMigrationsHash, err := os.ReadFile(migrationsHashPath)
 
-	// fmt.Println("hash of migrations:", hash)
-	// TODO: save hash of all migration contents if not exist + run migration
-	if string(currentMigrationsHash) != nextMigrationHash {
+	changed := string(currentMigrationsHash) != nextMigrationHash
+	if changed {
 		// TODO: run migration here + write new hash to file
 		err = os.WriteFile(migrationsHashPath, []byte(nextMigrationHash), 0o644)
-		checkError(err, "error writing hash of migrations")
+		checkError("error writing hash of migrations", err)
 	}
+	return changed
 }
 
-func watch(c *cli.Context, backendPath, frontendPath string) {
+func watch(db *sql.DB, backendPath, frontendPath string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err).Msg("can not start file watcher")
 	}
 	defer func(watcher *fsnotify.Watcher) {
 		err := watcher.Close()
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal().Err(err).Msg("could not stop file watcher")
 		}
 	}(watcher)
 
@@ -97,15 +221,15 @@ func watch(c *cli.Context, backendPath, frontendPath string) {
 				if !ok {
 					return
 				}
-				// log.Println("event:", event)
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Println("modified file:", event.Name)
+					log.Debug().Str("file", event.Name).Msg("modified file")
+					fileChanged(db, event)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				log.Println("error:", err)
+				log.Err(err).Msg("error while watching files")
 			}
 		}
 	}()
@@ -113,65 +237,52 @@ func watch(c *cli.Context, backendPath, frontendPath string) {
 	// TODO: watch migrations folder
 	// TODO: watch custom_schema.grapql if changed run convert_plugin
 
-	err = watcher.Add(path.Join(backendPath, "migrations"))
-	checkError(err, "failed to watch migrations folder")
-	err = watcher.Add(path.Join(frontendPath, "schema_custom.graphql"))
-	checkError(err, "failed to watch custom_schema.graphql")
+	filesOrDirectoriesToWatch := []string{
+		backendPath,
+		path.Join(frontendPath, "schema_custom.graphql"),
+	}
+	for _, w := range filesOrDirectoriesToWatch {
+		err = watcher.Add(backendPath)
+		checkError(fmt.Sprintf("failed to watch %v", w), err)
+	}
 
 	<-done
 }
 
-func startDocker(c *cli.Context) error {
-	// TODO: add
-	fmt.Println("boom! I say!")
-	return nil
+func fileChanged(db *sql.DB, event fsnotify.Event) {
+	envChanged := strings.Contains(event.Name, ".env")
+	goChanged := strings.Contains(event.Name, ".go")
+	sqlChanged := strings.Contains(event.Name, ".sql")
+	schemaChanged := strings.Contains(event.Name, ".graphql")
+
+	switch true {
+	case sqlChanged:
+		dropDatabase(db)
+		runMigrations()
+		runConvertPlugin()
+		runSeeder()
+		restart <- true
+	case schemaChanged:
+		runConvertPlugin()
+		restart <- true
+	case goChanged, envChanged:
+		fmt.Println("REstart triggered!")
+		restart <- true
+	}
 }
 
-func startBackend(c *cli.Context) error {
-	// TODO: add
-	fmt.Println("boom! I say!")
-	return nil
+func startDbInDocker() *exec.Cmd {
+	cmd := exec.Command("docker-compose", "up", "db")
+	// cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	checkError("failed to start db", cmd.Run())
+	return cmd
 }
 
-func runLocalCommand(command string) {
-	cmd := exec.Command("/bin/sh", "-c", command)
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+func checkError(s string, err error) {
 	if err != nil {
-		fmt.Println(stderr.String())
-		return
+		log.Fatal().Err(err).Msg("🔥🔥🔥 " + s)
 	}
-	fmt.Println(out.String())
-}
-
-func checkError(err error, s string) {
-	if err != nil {
-		fmt.Println(fmt.Errorf("%v: %v", s, err))
-		os.Exit(1)
-	}
-}
-
-func getPathInformation() (string, string, string) {
-	path, err := os.Getwd()
-	checkError(err, "get project name")
-
-	directories := strings.Split(path, "/")
-	var basePath []string
-	for i, directory := range directories {
-		basePath = append(basePath, directory)
-		if directory == "github.com" {
-			organizationName := directories[i+1]
-			projectName := directories[i+2]
-
-			// next directory is organization name
-			// directory after that is project name
-			return organizationName, projectName, strings.Join(basePath, "/")
-		}
-	}
-	return "unknown-org", "unknown-project", "unknown-path"
 }
 
 func MD5AllString(root string) (string, error) {
