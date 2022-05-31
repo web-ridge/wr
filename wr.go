@@ -89,16 +89,17 @@ func start(c *cli.Context) error {
 	// start watching migrations/code
 	go watch(db, backendPath, frontendPath)
 
-	// wait for restarts
-	go func() {
-		existingServer := startServerInBackground(false)
-		for <-restart {
-			fmt.Println("restart received!")
-			stopServer(existingServer)
-			fmt.Println("stopped server")
-			existingServer = startServerInBackground(true)
-		}
-	}()
+	// start server and wait for restarts
+	existingServer := startServerInBackground(false)
+	for <-restart {
+		log.Debug().Msg("restarting backend...")
+		stopServer(existingServer)
+		existingServer = startServerInBackground(true)
+		log.Debug().Msg("✅ restarted backend..")
+	}
+
+	// stop the server
+	stopServer(existingServer)
 
 	return nil
 }
@@ -266,7 +267,6 @@ func fileChanged(db *sql.DB, event fsnotify.Event) {
 		runConvertPlugin()
 		restart <- true
 	case goChanged, envChanged:
-		fmt.Println("REstart triggered!")
 		restart <- true
 	}
 }
