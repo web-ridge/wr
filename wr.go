@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -29,6 +30,7 @@ import (
 var (
 	quit    = make(chan bool)
 	restart = make(chan bool)
+	port    = os.Getenv("PORT")
 )
 
 func main() {
@@ -114,9 +116,12 @@ func stopServer(existingServer *exec.Cmd) {
 	// Send kill signal to the process group instead of single process (it gets the same value as the PID, only negative)
 	err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL)
 	checkError("can not stop server", err)
+
+	killPortProcess(port)
 }
 
 func startServerInBackground(restart bool) *exec.Cmd {
+	killPortProcess(port)
 	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -127,6 +132,10 @@ func startServerInBackground(restart bool) *exec.Cmd {
 	go func() {
 		err := cmd.Run()
 		checkServerError(err)
+		defer func() {
+			log.Debug().Msg("kill server")
+			checkError("can not kill server", cmd.Process.Kill())
+		}()
 	}()
 
 	return cmd
@@ -160,7 +169,8 @@ func dropDatabase(db *sql.DB) {
 func runConvertPlugin() {
 	log.Debug().Msg("start convert/convert.go")
 
-	cmd := exec.Command("/bin/sh", "-c", "cd convert", "go", "run", "convert.go")
+	cmd := exec.Command("go", "run", "convert.go")
+	cmd.Dir = "./convert"
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
@@ -169,15 +179,45 @@ func runConvertPlugin() {
 	log.Debug().Msg("✅ done convert/convert.go")
 }
 
+func killPortProcess(port string) {
+	if runtime.GOOS == "windows" {
+		command := fmt.Sprintf("(Get-NetTCPConnection -LocalPort %s).OwningProcess -Force", port)
+		execKillCommand(exec.Command("Stop-Process", "-Id", command))
+	} else {
+		command := fmt.Sprintf("lsof -i tcp:%s | grep LISTEN | awk '{print $2}' | xargs kill -9", port)
+		execKillCommand(exec.Command("bash", "-c", command))
+	}
+}
+
+// Execute command and return exited code.
+func execKillCommand(cmd *exec.Cmd) {
+	var waitStatus syscall.WaitStatus
+	if err := cmd.Run(); err != nil {
+		if err != nil {
+			os.Stderr.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
+		}
+		if exitError, ok := err.(*exec.ExitError); ok {
+			waitStatus = exitError.Sys().(syscall.WaitStatus)
+			fmt.Printf("Error during killing (exit code: %s)\n", []byte(fmt.Sprintf("%d", waitStatus.ExitStatus())))
+		}
+	} else {
+		waitStatus = cmd.ProcessState.Sys().(syscall.WaitStatus)
+		fmt.Printf("Port successfully killed (exit code: %s)\n", []byte(fmt.Sprintf("%d", waitStatus.ExitStatus())))
+	}
+}
+
 func runRelayGenerator(backendPath string) {
 }
 
 func runSeeder() {
 	log.Debug().Msg("start seed/seed.go")
 
-	cmd := exec.Command("/bin/sh", "-c", "cd seed", "go", "run", "seed.go")
+	cmd := exec.Command("go", "run", "seed.go")
+	cmd.Dir = "./seed"
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, "DATABASE_DEBUG=false")
 	err := cmd.Run()
 	checkError("failed to run seed/seed.go", err)
 
