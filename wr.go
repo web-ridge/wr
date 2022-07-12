@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -217,20 +218,17 @@ func runRelayGenerator() {
 
 // forceIndexGeneratedDirectory forces the frontend IDE to index the generated dir faster
 func forceIndexGeneratedDirectory() {
-	// TODO: fix this!
-	//prefix := "wr-version-index-"
-	//files := glob("../frontend/src/__generated__", func(s string) bool {
-	//	return strings.HasPrefix(s, prefix)
-	//})
-	//for _, file := range files {
-	//	log.Debug().Str("file", file).Msg("loop version index")
-	//	checkError("could not force index of relay.dev (existing)", os.Rename(file, "./wr-version-index-"))
-	//}
-	//if len(files) == 0 {
-	//	f, err := os.Create(prefix + "0")
-	//	checkError("could not close file", f.Close())
-	//	checkError("could not force index of relay.dev (new)", err)
-	//}
+	prefix := "wr-version-index-"
+	files := glob("../frontend/src/__generated__", func(s string) bool {
+		return strings.HasPrefix(s, prefix)
+	})
+	for _, file := range files {
+		checkError("could not remove index", os.Remove(file))
+	}
+	timestamp := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	f, err := os.Create(prefix + timestamp)
+	checkError("could not close file", f.Close())
+	checkError("could not force index of relay.dev (new)", err)
 }
 
 func runMergeSchemas() {
@@ -313,7 +311,7 @@ func watch(backendPath, frontendPath string) {
 		"../frontend/schema_custom.graphql",
 		"../frontend/src/__generated__",
 	}...)
-	fmt.Println(filesOrDirectoriesToWatch)
+	// fmt.Println(filesOrDirectoriesToWatch)
 	for _, w := range filesOrDirectoriesToWatch {
 		err = watcher.Add(w)
 		checkError(fmt.Sprintf("failed to watch %v", w), err)
@@ -364,9 +362,9 @@ func fileChanged(event fsnotify.Event) {
 	seedChanged := strings.Contains(event.Name, "/seed/")
 	generatedChanged := strings.Contains(event.Name, "/__generated__/")
 	migrationsChanged := strings.Contains(event.Name, "/migrations/")
-	generatedFileChanged := strings.Contains(event.Name, "generated_")
+	goGeneratedChanged := strings.Contains(event.Name, "generated_") && goChanged
 	// we only change models from here so we don't need to subscribe
-	if generatedFileChanged {
+	if goGeneratedChanged {
 		return
 	}
 
