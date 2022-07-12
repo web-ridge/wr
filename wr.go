@@ -294,7 +294,7 @@ func watch(backendPath, frontendPath string) {
 					return
 				}
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Debug().Str("file", event.Name).Msg("modified file")
+					// log.Debug().Str("file", event.Name).Msg("modified file")
 					fileChanged(event)
 				}
 			case err, ok := <-watcher.Errors:
@@ -356,20 +356,28 @@ func runMigrationsChanged() {
 }
 
 func fileChanged(event fsnotify.Event) {
-	modelsChanged := strings.Contains(event.Name, "/models/")
 	envChanged := strings.Contains(event.Name, ".env")
-	goChanged := strings.Contains(event.Name, ".go")
+	goChanged := strings.Contains(event.Name, ".go") || strings.Contains(event.Name, ".gohtml")
 	sqlChanged := strings.Contains(event.Name, ".sql")
 	schemaChanged := strings.Contains(event.Name, ".graphql")
 	seedChanged := strings.Contains(event.Name, "/seed/")
 	generatedChanged := strings.Contains(event.Name, "/__generated__/")
 	migrationsChanged := strings.Contains(event.Name, "/migrations/")
+	generatedFileChanged := strings.Contains(event.Name, "generated_")
 	// we only change models from here so we don't need to subscribe
-	if modelsChanged {
+	if generatedFileChanged {
 		return
 	}
 
-	log.Debug().Str("name", event.Name).Msg("changed file")
+	log.Debug().
+		Str("name", event.Name).
+		Bool("sqlChanged", sqlChanged).
+		Bool("schemaChanged", schemaChanged).
+		Bool("goChanged", goChanged).
+		Bool("envChanged", envChanged).
+		Bool("generatedChanged", generatedChanged).
+		Bool("migrationsChanged", migrationsChanged).
+		Msg("changed file")
 	switch true {
 	case sqlChanged:
 		debounced(runSqlChanged)
@@ -418,7 +426,14 @@ func getDirectoryWithSubDirectories() []string {
 	err := filepath.Walk(".",
 		func(path string, info os.FileInfo, err error) error {
 			checkError("walking files", err)
+
 			if info.IsDir() {
+				if strings.Contains(path, "models/") {
+					return nil
+				}
+				if strings.Contains(path, ".idea") {
+					return nil
+				}
 				a = append(a, path)
 			}
 
