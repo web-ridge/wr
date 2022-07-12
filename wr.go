@@ -217,19 +217,20 @@ func runRelayGenerator() {
 
 // forceIndexGeneratedDirectory forces the frontend IDE to index the generated dir faster
 func forceIndexGeneratedDirectory() {
-	prefix := "wr-version-index-"
-	files := glob("../frontend/src/__generated__", func(s string) bool {
-		return strings.HasPrefix(s, prefix)
-	})
-	for _, file := range files {
-		log.Debug().Str("file", file).Msg("loop version index")
-		checkError("could not force index of relay.dev (existing)", os.Rename(file, "./wr-version-index-"))
-	}
-	if len(files) == 0 {
-		f, err := os.Create(prefix + "0")
-		checkError("could not close file", f.Close())
-		checkError("could not force index of relay.dev (new)", err)
-	}
+	// TODO: fix this!
+	//prefix := "wr-version-index-"
+	//files := glob("../frontend/src/__generated__", func(s string) bool {
+	//	return strings.HasPrefix(s, prefix)
+	//})
+	//for _, file := range files {
+	//	log.Debug().Str("file", file).Msg("loop version index")
+	//	checkError("could not force index of relay.dev (existing)", os.Rename(file, "./wr-version-index-"))
+	//}
+	//if len(files) == 0 {
+	//	f, err := os.Create(prefix + "0")
+	//	checkError("could not close file", f.Close())
+	//	checkError("could not force index of relay.dev (new)", err)
+	//}
 }
 
 func runMergeSchemas() {
