@@ -306,11 +306,12 @@ func watch(backendPath, frontendPath string) {
 		}
 	}()
 
-	filesOrDirectoriesToWatch := []string{
-		backendPath + "/*",
+	filesOrDirectoriesToWatch := getDirectoryWithSubDirectories(backendPath)
+
+	filesOrDirectoriesToWatch = append(filesOrDirectoriesToWatch, []string{
 		"../frontend/schema_custom.graphql",
 		"../frontend/__generated__",
-	}
+	}...)
 	for _, w := range filesOrDirectoriesToWatch {
 		err = watcher.Add(backendPath)
 		checkError(fmt.Sprintf("failed to watch %v", w), err)
@@ -367,6 +368,7 @@ func fileChanged(event fsnotify.Event) {
 		return
 	}
 
+	log.Debug().Str("name", event.Name).Msg("changed file")
 	switch true {
 	case sqlChanged:
 		debounced(runSqlChanged)
@@ -407,4 +409,20 @@ func glob(root string, fn func(string) bool) []string {
 		return nil
 	})
 	return files
+}
+
+func getDirectoryWithSubDirectories(dir string) []string {
+	var a []string
+	a = append(a, dir)
+	err := filepath.Walk(dir,
+		func(path string, info os.FileInfo, err error) error {
+			checkError("walking files", err)
+			if info.IsDir() {
+				a = append(a, info.Name())
+			}
+
+			return nil
+		})
+	checkError("could not get dir with sub dirs", err)
+	return a
 }
