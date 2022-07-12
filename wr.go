@@ -385,6 +385,8 @@ func fileChanged(event fsnotify.Event) {
 		Bool("migrationsChanged", migrationsChanged).
 		Msg("changed file")
 	switch true {
+	case generatedChanged:
+		debounced(runGeneratedChanged)
 	case sqlChanged:
 		debounced(runSqlChanged)
 	case schemaChanged:
@@ -393,8 +395,6 @@ func fileChanged(event fsnotify.Event) {
 		debounced(runSeedChanged)
 	case goChanged, envChanged:
 		debounced(runGoChanged)
-	case generatedChanged:
-		debounced(runGeneratedChanged)
 	case migrationsChanged:
 		debounced(runMigrationsChanged)
 	}
