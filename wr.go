@@ -153,21 +153,25 @@ func checkServerError(err error) {
 }
 
 func runMigrations() {
+	log.Debug().Msg("run migrations")
 	cmd := exec.Command("go", "run", "migrate.go")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	checkError("failed to run migrations", err)
+	log.Debug().Msg("✅ done migrating!")
 	return
 }
 
 func dropDatabase() {
+	log.Debug().Msg("drop db")
 	name := os.Getenv("DATABASE_NAME")
 	var err error
 	_, err = db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%v`", name))
 	checkError("could not drop database", err)
 	_, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%v`", name))
 	checkError("could not create database", err)
+	log.Debug().Msg("✅ dropped db!")
 }
 
 func runConvertPlugin() {
@@ -219,14 +223,17 @@ func runRelayGenerator() {
 // forceIndexGeneratedDirectory forces the frontend IDE to index the generated dir faster
 func forceIndexGeneratedDirectory() {
 	prefix := "wr-version-index-"
-	files := glob("../frontend/src/__generated__", func(s string) bool {
-		return strings.HasPrefix(s, prefix)
+
+	generatedPath := "../frontend/src/__generated__"
+	err := filepath.WalkDir(generatedPath, func(s string, d fs.DirEntry, e error) error {
+		if strings.HasPrefix(s, prefix) {
+			checkError("could not remove index", os.Remove(s))
+		}
+		return nil
 	})
-	for _, file := range files {
-		checkError("could not remove index", os.Remove(file))
-	}
+
 	timestamp := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
-	f, err := os.Create(prefix + timestamp)
+	f, err := os.Create(generatedPath + "/" + prefix + timestamp)
 	checkError("could not close file", f.Close())
 	checkError("could not force index of relay.dev (new)", err)
 }
@@ -394,7 +401,7 @@ func fileChanged(event fsnotify.Event) {
 }
 
 func startDbInDocker() *exec.Cmd {
-	cmd := exec.Command("docker-compose", "up", "db")
+	cmd := exec.Command("docker-compose", "up", "-d", "db")
 	// cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	checkError("failed to start db", cmd.Run())
@@ -406,17 +413,6 @@ func checkError(s string, err error) {
 		notify("Error 🔥🔥🔥", s)
 		log.Fatal().Err(err).Msg("🔥🔥🔥 " + s)
 	}
-}
-
-func glob(root string, fn func(string) bool) []string {
-	var files []string
-	filepath.WalkDir(root, func(s string, d fs.DirEntry, e error) error {
-		if fn(s) {
-			files = append(files, s)
-		}
-		return nil
-	})
-	return files
 }
 
 func getDirectoryWithSubDirectories() []string {
