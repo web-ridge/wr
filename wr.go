@@ -306,14 +306,15 @@ func watch(backendPath, frontendPath string) {
 		}
 	}()
 
-	filesOrDirectoriesToWatch := getDirectoryWithSubDirectories(backendPath)
+	filesOrDirectoriesToWatch := getDirectoryWithSubDirectories()
 
 	filesOrDirectoriesToWatch = append(filesOrDirectoriesToWatch, []string{
 		"../frontend/schema_custom.graphql",
-		"../frontend/__generated__",
+		"../frontend/src/__generated__",
 	}...)
+	fmt.Println(filesOrDirectoriesToWatch)
 	for _, w := range filesOrDirectoriesToWatch {
-		err = watcher.Add(backendPath)
+		err = watcher.Add(w)
 		checkError(fmt.Sprintf("failed to watch %v", w), err)
 	}
 
@@ -411,14 +412,14 @@ func glob(root string, fn func(string) bool) []string {
 	return files
 }
 
-func getDirectoryWithSubDirectories(dir string) []string {
+func getDirectoryWithSubDirectories() []string {
 	var a []string
-	a = append(a, dir)
-	err := filepath.Walk(dir,
+	a = append(a, "./")
+	err := filepath.Walk(".",
 		func(path string, info os.FileInfo, err error) error {
 			checkError("walking files", err)
 			if info.IsDir() {
-				a = append(a, info.Name())
+				a = append(a, path)
 			}
 
 			return nil
