@@ -3,6 +3,7 @@ module github.com/web-ridge/wr
 go 1.18
 
 require (
+	github.com/bep/debounce v1.2.1
 	github.com/fsnotify/fsnotify v1.5.1
 	github.com/gen2brain/beeep v0.0.0-20220518085355-d7852edf42fc
 	github.com/go-sql-driver/mysql v1.6.0
