@@ -83,8 +83,8 @@ func start(c *cli.Context) error {
 	dropDatabase()
 	runMigrations()
 
-	runSeeder()
 	runConvertPlugin()
+	runSeeder()
 
 	// start watching migrations/code
 	go watch(backendPath, frontendPath)
