@@ -82,7 +82,7 @@ func start(c *cli.Context) error {
 
 	dropDatabase()
 	runMigrations()
-
+	runMergeSchemasWithRelay()
 	runConvertPlugin()
 	runSeeder()
 
@@ -214,7 +214,7 @@ func execKillCommand(cmd *exec.Cmd) {
 	}
 }
 
-func runRelayGenerator() {
+func runMergeSchemasWithRelay() {
 	runMergeSchemas()
 	runRelay()
 	forceIndexGeneratedDirectory()
@@ -339,7 +339,7 @@ func runSqlChanged() {
 
 func runSchemaChanged() {
 	runConvertPlugin()
-	runRelayGenerator()
+	runMergeSchemasWithRelay()
 	restart <- true
 }
 
