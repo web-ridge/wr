@@ -115,7 +115,7 @@ func stopServer(existingServer *exec.Cmd) {
 	// Send kill signal to the process group instead of single process (it gets the same value as the PID, only negative)
 	if existingServer != nil && existingServer.Process != nil {
 		err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL)
-		checkError("can not stop server", err)
+		checkErrorWithoutFatal("can not stop server", err)
 	}
 
 	killPortProcess(port)
@@ -131,13 +131,15 @@ func startServerInBackground(restart bool) *exec.Cmd {
 
 	go func() {
 		err := cmd.Run()
-		checkServerError(err)
+		if err != nil {
+			checkErrorWithoutFatal("failed to run server", err)
+		}
 		defer func() {
 			log.Debug().Msg("kill server")
 			err = cmd.Process.Kill()
 			alreadyKilled := strings.Contains(err.Error(), "process already finished")
 			if !alreadyKilled {
-				checkError("can not kill server", err)
+				checkErrorWithoutFatal("can not kill server", err)
 			}
 		}()
 	}()
@@ -410,8 +412,15 @@ func startDbInDocker() *exec.Cmd {
 
 func checkError(s string, err error) {
 	if err != nil {
-		notify("Error 🔥🔥🔥", s)
+		notify("Fatal Error 🔥🔥🔥", s)
 		log.Fatal().Err(err).Msg("🔥🔥🔥 " + s)
+	}
+}
+
+func checkErrorWithoutFatal(s string, err error) {
+	if err != nil {
+		notify("Error 🔥🔥🔥", s)
+		log.Error().Err(err).Msg("🔥🔥🔥 " + s)
 	}
 }
 
