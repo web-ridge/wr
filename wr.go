@@ -3,13 +3,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -132,14 +130,14 @@ func startServerInBackground(restart bool) *exec.Cmd {
 	go func() {
 		err := cmd.Run()
 		if err != nil {
-			checkErrorWithoutFatal("failed to run server", err)
+			checkServerError(err)
 		}
 		defer func() {
 			log.Debug().Msg("kill server")
 			err = cmd.Process.Kill()
 			alreadyKilled := strings.Contains(err.Error(), "process already finished")
 			if !alreadyKilled {
-				checkErrorWithoutFatal("can not kill server", err)
+				checkServerError(err)
 			}
 		}()
 	}()
@@ -151,7 +149,7 @@ func checkServerError(err error) {
 	if err != nil && strings.Contains(err.Error(), "signal: killed") {
 		return
 	}
-	checkError("failed to run server", err)
+	checkErrorWithoutFatal("failed to run server", err)
 }
 
 func runMigrations() {
@@ -219,26 +217,26 @@ func execKillCommand(cmd *exec.Cmd) {
 func runMergeSchemasWithRelay() {
 	runMergeSchemas()
 	runRelay()
-	forceIndexGeneratedDirectory()
+	// forceIndexGeneratedDirectory()
 }
 
 // forceIndexGeneratedDirectory forces the frontend IDE to index the generated dir faster
-func forceIndexGeneratedDirectory() {
-	prefix := "wr-version-index-"
-
-	generatedPath := "../frontend/src/__generated__"
-	err := filepath.WalkDir(generatedPath, func(s string, d fs.DirEntry, e error) error {
-		if strings.HasPrefix(s, prefix) {
-			checkError("could not remove index", os.Remove(s))
-		}
-		return nil
-	})
-
-	timestamp := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
-	f, err := os.Create(generatedPath + "/" + prefix + timestamp)
-	checkError("could not close file", f.Close())
-	checkError("could not force index of relay.dev (new)", err)
-}
+//func forceIndexGeneratedDirectory() {
+//	prefix := "wr-version-index-"
+//
+//	generatedPath := "../frontend/src/__generated__"
+//	err := filepath.WalkDir(generatedPath, func(s string, d fs.DirEntry, e error) error {
+//		if strings.HasPrefix(s, prefix) {
+//			checkError("could not remove index", os.Remove(s))
+//		}
+//		return nil
+//	})
+//
+//	timestamp := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+//	f, err := os.Create(generatedPath + "/" + prefix + timestamp)
+//	checkError("could not close file", f.Close())
+//	checkError("could not force index of relay.dev (new)", err)
+//}
 
 func runMergeSchemas() {
 	log.Debug().Msg("run merge-schemas")
@@ -246,7 +244,7 @@ func runMergeSchemas() {
 	cmd := exec.Command("yarn", "merge-schemas")
 	cmd.Dir = "../frontend"
 	// cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	checkError("failed to run convert/convert.go", err)
 
@@ -276,7 +274,7 @@ func runSeeder() {
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "DATABASE_DEBUG=false")
 	err := cmd.Run()
-	checkError("failed to run seed/seed.go", err)
+	checkErrorWithoutFatal("failed to run seed/seed.go", err)
 
 	log.Debug().Msg("✅ done seed/seed.go")
 }
@@ -354,7 +352,7 @@ func runGoChanged() {
 }
 
 func runGeneratedChanged() {
-	forceIndexGeneratedDirectory()
+	// forceIndexGeneratedDirectory()
 }
 
 func runMigrationsChanged() {
