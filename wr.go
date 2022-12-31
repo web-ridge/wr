@@ -71,14 +71,15 @@ func start(c *cli.Context) error {
 
 	frontendPath := path.Join(startPath, "frontend")
 
-	existingServer := startServerInBackground(true)
-
 	// first we start the database
 	go startDbInDocker()
 
 	// wait till the db is started
 	time.Sleep(1 * time.Second)
 	db = helpers.WaitForDatabase()
+
+	// try to start server, if it fails, we will try again
+	existingServer := startServerInBackground(true)
 
 	dropDatabase()
 	runMigrations()
@@ -122,6 +123,7 @@ func stopServer(existingServer *exec.Cmd) {
 }
 
 func startServerInBackground(restart bool) *exec.Cmd {
+	killPortProcess(port)
 	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
