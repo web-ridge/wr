@@ -71,8 +71,8 @@ func start(c *cli.Context) error {
 
 	frontendPath := path.Join(startPath, "frontend")
 
-	existingServer := startServerInBackground(false)
-	
+	existingServer := startServerInBackground(true)
+
 	// first we start the database
 	go startDbInDocker()
 
