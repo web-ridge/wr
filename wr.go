@@ -71,6 +71,8 @@ func start(c *cli.Context) error {
 
 	frontendPath := path.Join(startPath, "frontend")
 
+	existingServer := startServerInBackground(false)
+	
 	// first we start the database
 	go startDbInDocker()
 
@@ -89,7 +91,7 @@ func start(c *cli.Context) error {
 
 	// start server and wait for restarts
 	killPortProcess(port)
-	existingServer := startServerInBackground(false)
+	existingServer = startServerInBackground(false)
 	for <-restart {
 		log.Debug().Msg("restarting backend...")
 		stopServer(existingServer)
