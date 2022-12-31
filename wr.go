@@ -62,7 +62,7 @@ func start(c *cli.Context) error {
 	fmt.Println("")
 
 	backendPath, err := os.Getwd()
-	checkError("cant get current dir", err)
+	checkErrorWithFatal("cant get current dir", err)
 	startPath := filepath.Dir(backendPath)
 	directories := strings.Split(startPath, "/")
 	organizationName := directories[len(directories)-2]
@@ -113,7 +113,7 @@ func stopServer(existingServer *exec.Cmd) {
 	// Send kill signal to the process group instead of single process (it gets the same value as the PID, only negative)
 	if existingServer != nil && existingServer.Process != nil {
 		err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL)
-		checkErrorWithoutFatal("can not stop server", err)
+		checkError("can not stop server", err)
 	}
 
 	killPortProcess(port)
@@ -149,7 +149,7 @@ func checkServerError(err error) {
 	if err != nil && strings.Contains(err.Error(), "signal: killed") {
 		return
 	}
-	checkErrorWithoutFatal("failed to run server", err)
+	checkError("failed to run server", err)
 }
 
 func runMigrations() {
@@ -168,9 +168,9 @@ func dropDatabase() {
 	name := os.Getenv("DATABASE_NAME")
 	var err error
 	_, err = db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%v`", name))
-	checkError("could not drop database", err)
+	checkErrorWithFatal("could not drop database", err)
 	_, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%v`", name))
-	checkError("could not create database", err)
+	checkErrorWithFatal("could not create database", err)
 	log.Debug().Msg("✅ dropped db!")
 }
 
@@ -274,7 +274,7 @@ func runSeeder() {
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "DATABASE_DEBUG=false")
 	err := cmd.Run()
-	checkErrorWithoutFatal("failed to run seed/seed.go", err)
+	checkError("failed to run seed/seed.go", err)
 
 	log.Debug().Msg("✅ done seed/seed.go")
 }
@@ -410,15 +410,15 @@ func startDbInDocker() *exec.Cmd {
 
 func checkError(s string, err error) {
 	if err != nil {
-		notify("Fatal Error 🔥🔥🔥", s)
-		log.Fatal().Err(err).Msg("🔥🔥🔥 " + s)
+		notify("Error 🔥🔥🔥", s)
+		log.Error().Err(err).Msg("🔥🔥🔥 " + s)
 	}
 }
 
-func checkErrorWithoutFatal(s string, err error) {
+func checkErrorWithFatal(s string, err error) {
 	if err != nil {
-		notify("Error 🔥🔥🔥", s)
-		log.Error().Err(err).Msg("🔥🔥🔥 " + s)
+		notify("Fatal Error 🔥🔥🔥", s)
+		log.Fatal().Err(err).Msg("🔥🔥🔥 " + s)
 	}
 }
 
@@ -427,7 +427,7 @@ func getDirectoryWithSubDirectories() []string {
 	a = append(a, "./")
 	err := filepath.Walk(".",
 		func(path string, info os.FileInfo, err error) error {
-			checkError("walking files", err)
+			checkErrorWithFatal("walking files", err)
 
 			if info.IsDir() {
 				if strings.Contains(path, "models/") {
@@ -441,6 +441,6 @@ func getDirectoryWithSubDirectories() []string {
 
 			return nil
 		})
-	checkError("could not get dir with sub dirs", err)
+	checkErrorWithFatal("could not get dir with sub dirs", err)
 	return a
 }
