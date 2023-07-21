@@ -35,7 +35,7 @@ func WaitForDatabase() *sql.DB {
 		log.Debug().Msg("database connection is ready :)")
 	}()
 	for {
-		log.Debug().Msg("waiting for database connection")
+		log.Debug().Msg("waiting for database connection... (if this is running for long, check if docker has been started)")
 
 		for _, requiredEnvName := range requiredDatabaseEnvs {
 			if os.Getenv(requiredEnvName) == "" {

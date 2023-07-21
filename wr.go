@@ -71,6 +71,10 @@ func start(c *cli.Context) error {
 
 	frontendPath := path.Join(startPath, "frontend")
 
+	installPrettier()
+	installSqlBoiler()
+	installSqlBoilerMysqlDriver()
+
 	// first we start the database
 	go startDbInDocker()
 
@@ -104,6 +108,38 @@ func start(c *cli.Context) error {
 	stopServer(existingServer)
 
 	return nil
+}
+
+func installPrettier() {
+	log.Debug().Msg("install prettier")
+	cmd := exec.Command("npm", "install", "-g", "prettier@latest", "--force", "--silent")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to install prettier", err)
+	log.Debug().Msg("✅ installed prettier")
+}
+
+func installSqlBoiler() {
+	log.Debug().Msg("install sqlboiler")
+	cmd := exec.Command("go", "install", "github.com/volatiletech/sqlboiler/v4@latest")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to install sqlboiler", err)
+
+	log.Debug().Msg("✅ installed sqlboiler")
+}
+
+func installSqlBoilerMysqlDriver() {
+	log.Debug().Msg("install sqlboiler mysql driver")
+	cmd := exec.Command("go", "install", "github.com/volatiletech/sqlboiler/v4/drivers/sqlboiler-mysql@latest")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to install sqlboiler mysql driver", err)
+
+	log.Debug().Msg("✅ installed sqlboiler mysql driver")
 }
 
 func notify(title, message string) {
