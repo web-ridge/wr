@@ -71,7 +71,9 @@ func start(c *cli.Context) error {
 
 	frontendPath := path.Join(startPath, "frontend")
 
+	installYarn1()
 	installPrettier()
+	installFrontendDependencies()
 	installSqlBoiler()
 	installSqlBoilerMysqlDriver()
 
@@ -108,6 +110,27 @@ func start(c *cli.Context) error {
 	stopServer(existingServer)
 
 	return nil
+}
+
+func installYarn1() {
+	log.Debug().Msg("install yarn1")
+	cmd := exec.Command("npm", "install", "-g", "yarn@1", "--force", "--silent")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to install yarn1", err)
+	log.Debug().Msg("✅ installed yarn1")
+}
+
+func installFrontendDependencies() {
+	log.Debug().Msg("install frontend dependencies")
+	cmd := exec.Command("yarn", "install")
+	cmd.Dir = "../frontend"
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	checkError("failed to install frontend dependencies", err)
+	log.Debug().Msg("✅ installed frontend dependencies")
 }
 
 func installPrettier() {
