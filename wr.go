@@ -280,26 +280,7 @@ func execKillCommand(cmd *exec.Cmd) {
 func runMergeSchemasWithRelay() {
 	runMergeSchemas()
 	runRelay()
-	// forceIndexGeneratedDirectory()
 }
-
-// forceIndexGeneratedDirectory forces the frontend IDE to index the generated dir faster
-//func forceIndexGeneratedDirectory() {
-//	prefix := "wr-version-index-"
-//
-//	generatedPath := "../frontend/src/__generated__"
-//	err := filepath.WalkDir(generatedPath, func(s string, d fs.DirEntry, e error) error {
-//		if strings.HasPrefix(s, prefix) {
-//			checkError("could not remove index", os.Remove(s))
-//		}
-//		return nil
-//	})
-//
-//	timestamp := strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
-//	f, err := os.Create(generatedPath + "/" + prefix + timestamp)
-//	checkError("could not close file", f.Close())
-//	checkError("could not force index of relay.dev (new)", err)
-//}
 
 func runMergeSchemas() {
 	log.Debug().Msg("run merge-schemas")
@@ -397,6 +378,7 @@ func runSqlChanged() {
 	runMigrations()
 	runConvertPlugin()
 	runSeeder()
+	runMergeSchemasWithRelay()
 	restart <- true
 }
 
@@ -414,10 +396,6 @@ func runGoChanged() {
 	restart <- true
 }
 
-func runGeneratedChanged() {
-	// forceIndexGeneratedDirectory()
-}
-
 func runMigrationsChanged() {
 	runMigrations()
 	runConvertPlugin()
@@ -426,39 +404,40 @@ func runMigrationsChanged() {
 
 func fileChanged(event fsnotify.Event) {
 	envChanged := strings.Contains(event.Name, ".env")
-	goChanged := strings.Contains(event.Name, ".go") || strings.Contains(event.Name, ".gohtml")
+
 	sqlChanged := strings.Contains(event.Name, ".sql")
 	schemaChanged := strings.Contains(event.Name, ".graphql")
-	seedChanged := strings.Contains(event.Name, "/seed/")
-	generatedChanged := strings.Contains(event.Name, "/__generated__/")
-	migrationsChanged := strings.Contains(event.Name, "/migrations/")
+	seedChanged := strings.Contains(event.Name, "seed/")
+	generatedChanged := strings.Contains(event.Name, "__generated__/")
+	migrationsChanged := strings.Contains(event.Name, "migrations/")
+	goChanged := strings.Contains(event.Name, ".go") || strings.Contains(event.Name, ".gohtml")
 	goGeneratedChanged := strings.Contains(event.Name, "generated_") && goChanged
+
+	log.Debug().Str("file", event.Name).Msg("modified file")
+
 	// we only change models from here so we don't need to subscribe
 	if goGeneratedChanged {
+		log.Debug().Msg("generated files from go changed, do nothing")
 		return
 	}
 
-	log.Debug().
-		Str("name", event.Name).
-		Bool("sqlChanged", sqlChanged).
-		Bool("schemaChanged", schemaChanged).
-		Bool("goChanged", goChanged).
-		Bool("envChanged", envChanged).
-		Bool("generatedChanged", generatedChanged).
-		Bool("migrationsChanged", migrationsChanged).
-		Msg("changed file")
 	switch true {
 	case generatedChanged:
-		debounced(runGeneratedChanged)
+		log.Debug().Msg("generated files relay.dev changed, do nothing")
 	case sqlChanged:
+		log.Debug().Msg("sql changed, run migrations + convert plugin")
 		debounced(runSqlChanged)
 	case schemaChanged:
+		log.Debug().Msg("run convert & merge schema's with relay")
 		debounced(runSchemaChanged)
 	case seedChanged:
+		log.Debug().Msg("re-rerun seed.go")
 		debounced(runSeedChanged)
 	case goChanged, envChanged:
+		log.Debug().Bool("goChanged", goChanged).Bool("envChanged", envChanged).Msg("restart server")
 		debounced(runGoChanged)
 	case migrationsChanged:
+		log.Debug().Bool("migrationsChanged", migrationsChanged).Msg("run migrations + convert plugin")
 		debounced(runMigrationsChanged)
 	}
 }
