@@ -443,7 +443,7 @@ func fileChanged(event fsnotify.Event) {
 }
 
 func startDbInDocker() *exec.Cmd {
-	cmd := exec.Command("docker-compose", "up", "-d", "db")
+	cmd := exec.Command("docker", "compose", "up", "-d", "db")
 	// cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	checkError("failed to start db", cmd.Run())
