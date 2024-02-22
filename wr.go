@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -97,17 +98,15 @@ func start(c *cli.Context) error {
 	go watch(backendPath, frontendPath)
 
 	// start server and wait for restarts
-	killPortProcess(port)
 	existingServer = startServerInBackground(false)
+	defer stopServer(existingServer)
+
 	for <-restart {
 		log.Debug().Msg("restarting backend...")
 		stopServer(existingServer)
 		existingServer = startServerInBackground(true)
 		log.Debug().Msg("✅ restarted backend..")
 	}
-
-	// stop the server
-	stopServer(existingServer)
 
 	return nil
 }
@@ -174,10 +173,19 @@ func stopServer(existingServer *exec.Cmd) {
 	// https://stackoverflow.com/a/68179972/2508481
 	// Send kill signal to the process group instead of single process (it gets the same value as the PID, only negative)
 	if existingServer != nil && existingServer.Process != nil {
-		err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL)
-		checkError("can not stop server", err)
+		if runtime.GOOS == "windows" {
+			// On Windows, use taskkill to kill the process by PID
+			cmd := exec.Command("taskkill", "/F", "/PID", strconv.Itoa(existingServer.Process.Pid))
+			if err := cmd.Run(); err != nil {
+				log.Error().Err(err).Msg("Failed to kill server process")
+			}
+		} else {
+			// On UNIX-like systems, use syscall.Kill as before
+			if err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL); err != nil {
+				log.Error().Err(err).Msg("Failed to kill server process group")
+			}
+		}
 	}
-
 	killPortProcess(port)
 }
 
@@ -196,12 +204,7 @@ func startServerInBackground(restart bool) *exec.Cmd {
 			checkServerError(err)
 		}
 		defer func() {
-			log.Debug().Msg("kill server")
-			err = cmd.Process.Kill()
-			alreadyKilled := strings.Contains(err.Error(), "process already finished")
-			if !alreadyKilled {
-				checkServerError(err)
-			}
+			stopServer(cmd)
 		}()
 	}()
 
