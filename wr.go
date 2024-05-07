@@ -64,7 +64,7 @@ func start(c *cli.Context) error {
 	checkErrorWithFatal("cant get current dir", err)
 	startPath := filepath.Dir(backendPath)
 	directories := strings.Split(startPath, "/")
-	organizationName := directories[len(directories)-2]
+	organizationName := directories[len(directories)-1]
 
 	log.Debug().Str("organization", organizationName).Msg("starting backend and dependencies")
 
