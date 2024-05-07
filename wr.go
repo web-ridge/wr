@@ -8,20 +8,18 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bep/debounce"
-	"github.com/gen2brain/beeep"
-	"github.com/web-ridge/wr/helpers"
-
-	_ "github.com/joho/godotenv/autoload"
-
 	"github.com/fsnotify/fsnotify"
+	"github.com/gen2brain/beeep"
+	_ "github.com/joho/godotenv/autoload"
 	"github.com/rs/zerolog/log"
 	"github.com/urfave/cli/v2"
+	"github.com/web-ridge/wr/helpers"
+	"github.com/web-ridge/wr/specific"
 )
 
 // https://stackoverflow.com/questions/36419054/go-projects-main-goroutine-sleep-forever
@@ -172,19 +170,11 @@ func notify(title, message string) {
 func stopServer(existingServer *exec.Cmd) {
 	// https://stackoverflow.com/a/68179972/2508481
 	// Send kill signal to the process group instead of single process (it gets the same value as the PID, only negative)
+
 	if existingServer != nil && existingServer.Process != nil {
-		if runtime.GOOS == "windows" {
-			// On Windows, use taskkill to kill the process by PID
-			cmd := exec.Command("taskkill", "/F", "/PID", strconv.Itoa(existingServer.Process.Pid))
-			if err := cmd.Run(); err != nil {
-				log.Error().Err(err).Msg("Failed to kill server process")
-			}
-		} else {
-			// On UNIX-like systems, use syscall.Kill as before
-			if err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL); err != nil {
-				log.Error().Err(err).Msg("Failed to kill server process group")
-			}
-		}
+
+		//TODO: implement global kill for all systems
+		specific.Kill(existingServer)
 	}
 	killPortProcess(port)
 }
@@ -196,7 +186,8 @@ func startServerInBackground(restart bool) *exec.Cmd {
 	cmd.Stderr = os.Stderr
 	// https://stackoverflow.com/a/68179972/2508481
 	// Request the OS to assign process group to the new process, to which all its children will belong
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{}
 
 	go func() {
 		err := cmd.Run()

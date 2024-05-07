@@ -18,3 +18,7 @@ go build wr.go
 ```sh
  /Users/richardlindhout/go/src/github.com/web-ridge/wr/wr
  ```
+
+ ```
+ C:\Users\Robin\webRidge\web-ridge\wr
+ ```
