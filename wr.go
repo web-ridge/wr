@@ -63,8 +63,8 @@ func start(c *cli.Context) error {
 	backendPath, err := os.Getwd()
 	checkErrorWithFatal("cant get current dir", err)
 	startPath := filepath.Dir(backendPath)
-	directories := strings.Split(startPath, "/")
-	organizationName := directories[len(directories)-1]
+	directories := strings.Split(startPath, string(os.PathSeparator))
+	organizationName := directories[len(directories)-2]
 
 	log.Debug().Str("organization", organizationName).Msg("starting backend and dependencies")
 
@@ -181,7 +181,14 @@ func stopServer(existingServer *exec.Cmd) {
 
 func startServerInBackground(restart bool) *exec.Cmd {
 	killPortProcess(port)
-	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd.exe", "/C", fmt.Sprintf("set WR_RESTART=%v && go run server.go", restart))
+	} else {
+		cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
+	}
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// https://stackoverflow.com/a/68179972/2508481
@@ -246,8 +253,8 @@ func runConvertPlugin() {
 
 func killPortProcess(port string) {
 	if runtime.GOOS == "windows" {
-		command := fmt.Sprintf("(Get-NetTCPConnection -LocalPort %s).OwningProcess -Force", port)
-		execKillCommand(exec.Command("Stop-Process", "-Id", command))
+		command := fmt.Sprintf("(Get-NetTCPConnection -LocalPort %s).OwningProcess", port)
+		execKillCommand(exec.Command("powershell", "-Command", fmt.Sprintf("& {Stop-Process -Id (%s) -Force}", command)))
 	} else {
 		command := fmt.Sprintf("lsof -i tcp:%s | grep LISTEN | awk '{print $2}' | xargs kill -9", port)
 		execKillCommand(exec.Command("bash", "-c", command))

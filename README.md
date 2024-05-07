@@ -20,5 +20,5 @@ go build wr.go
  ```
 
  ```
- C:\Users\Robin\webRidge\web-ridge\wr
+ C:\Users\Robin\webRidge\web-ridge\wr\wr
  ```
