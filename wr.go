@@ -142,7 +142,7 @@ func installPrettier() {
 
 func installSqlBoiler() {
 	log.Debug().Msg("install sqlboiler")
-	cmd := exec.Command("go", "install", "github.com/volatiletech/sqlboiler/v4@latest")
+	cmd := exec.Command("go", "install", "github.com/aarondl/sqlboiler/v4@latest")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
@@ -153,7 +153,7 @@ func installSqlBoiler() {
 
 func installSqlBoilerMysqlDriver() {
 	log.Debug().Msg("install sqlboiler mysql driver")
-	cmd := exec.Command("go", "install", "github.com/volatiletech/sqlboiler/v4/drivers/sqlboiler-mysql@latest")
+	cmd := exec.Command("go", "install", "github.com/aarondl/sqlboiler/v4/drivers/sqlboiler-mysql@latest")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
