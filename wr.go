@@ -211,9 +211,7 @@ func notify(title, message string) {
 
 func stopServer(cmd *exec.Cmd) {
 	if cmd != nil && cmd.Process != nil {
-		if err := specific.Kill(cmd); err != nil {
-			log.Error().Err(err).Msg("failed to kill server process")
-		}
+		specific.Kill(cmd) // No error return expected
 	}
 	killPortProcess(port)
 }
