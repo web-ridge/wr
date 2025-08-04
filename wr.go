@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -47,8 +48,6 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal().Err(err).Msg("cannot run app")
 	}
-
-	<-quit
 }
 
 func start(c *cli.Context) error {
@@ -62,6 +61,25 @@ func start(c *cli.Context) error {
                                     |___/      
 `)
 
+	// Set up signal handling for Ctrl+C and termination
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	var dockerCmd *exec.Cmd
+	var existingServer *exec.Cmd
+
+	// Cleanup function for graceful shutdown
+	defer func() {
+		log.Info().Msg("shutting down, cleaning up processes...")
+		if existingServer != nil {
+			stopServer(existingServer)
+		}
+		if dockerCmd != nil {
+			stopDocker()
+		}
+		killPortProcess(port)
+		close(quit)
+	}()
+
 	p, err := setupPaths()
 	if err != nil {
 		return fmt.Errorf("setup paths: %w", err)
@@ -71,27 +89,45 @@ func start(c *cli.Context) error {
 		return fmt.Errorf("install dependencies: %w", err)
 	}
 
-	go startDbInDocker()
+	dockerCmd = startDbInDocker()
 	time.Sleep(1 * time.Second)
 	db = helpers.WaitForDatabase()
-
-	existingServer := startServerInBackground(true)
-	defer stopServer(existingServer)
 
 	if err := runInitialSetup(); err != nil {
 		return fmt.Errorf("initial setup: %w", err)
 	}
 
-	go watch(p.backend, p.frontend)
-
-	for <-restart {
-		log.Debug().Msg("restarting backend...")
-		stopServer(existingServer)
-		existingServer = startServerInBackground(true)
-		log.Debug().Msg("✅ restarted backend")
+	// Start server after initial setup
+	killPortProcess(port)
+	existingServer = startServerInBackground(true)
+	if existingServer == nil {
+		log.Error().Msg("initial server start failed, continuing to watch for changes")
 	}
 
-	return nil
+	go watch(p.backend, p.frontend)
+
+	// Main loop for restarts and signal handling
+	for {
+		select {
+		case <-restart:
+			log.Debug().Msg("restarting backend...")
+			if existingServer != nil {
+				stopServer(existingServer)
+			}
+			killPortProcess(port)
+			existingServer = startServerInBackground(true)
+			if existingServer == nil {
+				log.Error().Msg("server restart failed, continuing to watch for changes")
+				continue
+			}
+			log.Debug().Msg("✅ restarted backend")
+		case <-sigChan:
+			log.Info().Msg("received shutdown signal")
+			return nil
+		case <-quit:
+			return nil
+		}
+	}
 }
 
 func setupPaths() (paths, error) {
@@ -175,7 +211,9 @@ func notify(title, message string) {
 
 func stopServer(cmd *exec.Cmd) {
 	if cmd != nil && cmd.Process != nil {
-		specific.Kill(cmd)
+		if err := specific.Kill(cmd); err != nil {
+			log.Error().Err(err).Msg("failed to kill server process")
+		}
 	}
 	killPortProcess(port)
 }
@@ -192,17 +230,53 @@ func startServerInBackground(restart bool) *exec.Cmd {
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Ensure process group is set for proper cleanup
 
 	go func() {
 		if err := cmd.Run(); err != nil && !strings.Contains(err.Error(), "signal: killed") {
-			notify("Server Error", "failed to run server")
+			notify("Server Error", fmt.Sprintf("failed to run server: %v", err))
 			log.Error().Err(err).Msg("failed to run server")
 		}
-		stopServer(cmd)
 	}()
 
+	// Wait briefly to check if the server started successfully
+	time.Sleep(500 * time.Millisecond)
+	if cmd.Process == nil || cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		log.Error().Msg("server failed to start or exited immediately")
+		return nil
+	}
+
 	return cmd
+}
+
+func startDbInDocker() *exec.Cmd {
+	cmd := exec.Command("docker", "compose", "up", "-d", "db")
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		notify("DB Error", "failed to start db")
+		log.Fatal().Err(err).Msg("failed to start db")
+	}
+	return cmd
+}
+
+func stopDocker() {
+	cmd := exec.Command("docker", "compose", "down")
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Error().Err(err).Msg("failed to stop docker containers")
+	}
+}
+
+func killPortProcess(port string) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("powershell", "-Command", fmt.Sprintf("Stop-Process -Id (Get-NetTCPConnection -LocalPort %s).OwningProcess -Force", port))
+	} else {
+		cmd = exec.Command("bash", "-c", fmt.Sprintf("lsof -i tcp:%s | grep LISTEN | awk '{print $2}' | xargs kill -9", port))
+	}
+	if err := cmd.Run(); err != nil {
+		log.Debug().Err(err).Msg("error killing port process")
+	}
 }
 
 func runInitialSetup() error {
@@ -217,6 +291,7 @@ func runInitialSetup() error {
 			return err
 		}
 	}
+	log.Info().Msg("Done migrating :)")
 	return nil
 }
 
@@ -250,18 +325,6 @@ func runConvertPlugin() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
-}
-
-func killPortProcess(port string) {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-Command", fmt.Sprintf("Stop-Process -Id (Get-NetTCPConnection -LocalPort %s).OwningProcess -Force", port))
-	} else {
-		cmd = exec.Command("bash", "-c", fmt.Sprintf("lsof -i tcp:%s | grep LISTEN | awk '{print $2}' | xargs kill -9", port))
-	}
-	if err := cmd.Run(); err != nil {
-		log.Debug().Err(err).Msg("error killing port process")
-	}
 }
 
 func runMergeSchemasWithRelay() error {
@@ -417,16 +480,6 @@ func fileChanged(event fsnotify.Event) {
 		log.Debug().Msg("run migrations + convert plugin")
 		debounced(runMigrationsChanged)
 	}
-}
-
-func startDbInDocker() *exec.Cmd {
-	cmd := exec.Command("docker", "compose", "up", "-d", "db")
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		notify("DB Error", "failed to start db")
-		log.Fatal().Err(err).Msg("failed to start db")
-	}
-	return cmd
 }
 
 func getDirectoryWithSubDirectories() []string {
