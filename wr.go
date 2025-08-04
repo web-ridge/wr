@@ -22,159 +22,160 @@ import (
 	"github.com/web-ridge/wr/specific"
 )
 
-// https://stackoverflow.com/questions/36419054/go-projects-main-goroutine-sleep-forever
 var (
 	quit    = make(chan bool)
 	restart = make(chan bool)
 	port    = os.Getenv("PORT")
+	db      *sql.DB
 )
-var db *sql.DB
+
+type paths struct {
+	backend  string
+	frontend string
+	orgName  string
+}
 
 func main() {
-	// let us have colored logs
 	helpers.ConfigureLogger()
 
 	app := &cli.App{
-		//Flags: []cli.Flag {
-		//	&cli.StringFlag{
-		//		Name: "lang",
-		//		Value: "english",
-		//		Usage: "language for the greeting",
-		//	},
-		//},
 		Name:   "wr",
 		Usage:  "wr is an internal tool to improve developer experience at webRidge",
 		Action: start,
 	}
 
-	err := app.Run(os.Args)
-	if err != nil {
-		log.Fatal().Err(err).Msg("can not run app")
+	if err := app.Run(os.Args); err != nil {
+		log.Fatal().Err(err).Msg("cannot run app")
 	}
 
-	// to quit program from somewhere else use close(quit)
 	<-quit
 }
 
 func start(c *cli.Context) error {
-	fmt.Println("               _     _____  _     _            \n              | |   |  __ \\(_)   | |           \n __      _____| |__ | |__) |_  __| | __ _  ___ \n \\ \\ /\\ / / _ \\ '_ \\|  _  /| |/ _` |/ _` |/ _ \\\n  \\ V  V /  __/ |_) | | \\ \\| | (_| | (_| |  __/\n   \\_/\\_/ \\___|_.__/|_|  \\_\\_|\\__,_|\\__, |\\___|\n                                     __/ |     \n                                    |___/   ") //nolint:lll
-	fmt.Println("")
+	log.Info().Msg(`
+               _     _____  _     _            
+              | |   |  __ \(_)   | |           
+ __      _____| |__ | |__) |_  __| | __ _  ___ 
+ \ \ /\ / / _ \ '_ \|  _  /| |/ _` + "`" + ` |/ _` + "`" + ` |/ _ \
+  \ V  V /  __/ |_) | | \ \| | (_| | (_| |  __/
+   \_/\_/ \___|_.__/|_|  \_\_|\__,_|\__,_|\___|
+                                    |___/      
+`)
 
-	backendPath, err := os.Getwd()
-	checkErrorWithFatal("cant get current dir", err)
-	startPath := filepath.Dir(backendPath)
-	directories := strings.Split(startPath, string(os.PathSeparator))
-	organizationName := directories[len(directories)-2]
+	p, err := setupPaths()
+	if err != nil {
+		return fmt.Errorf("setup paths: %w", err)
+	}
 
-	log.Debug().Str("organization", organizationName).Msg("starting backend and dependencies")
+	if err := installDependencies(p.frontend); err != nil {
+		return fmt.Errorf("install dependencies: %w", err)
+	}
 
-	frontendPath := path.Join(startPath, "frontend")
-
-	installYarn1()
-	installPrettier()
-	installFrontendDependencies()
-	installSqlBoiler()
-	installSqlBoilerMysqlDriver()
-
-	// first we start the database
 	go startDbInDocker()
-
-	// wait till the db is started
 	time.Sleep(1 * time.Second)
 	db = helpers.WaitForDatabase()
 
-	// try to start server, if it fails, we will try again
 	existingServer := startServerInBackground(true)
-
-	dropDatabase()
-	runMigrations()
-	runMergeSchemasWithRelay()
-	runConvertPlugin()
-	runSeeder()
-
-	// start watching migrations/code
-	go watch(backendPath, frontendPath)
-
-	// start server and wait for restarts
-	existingServer = startServerInBackground(false)
 	defer stopServer(existingServer)
+
+	if err := runInitialSetup(); err != nil {
+		return fmt.Errorf("initial setup: %w", err)
+	}
+
+	go watch(p.backend, p.frontend)
 
 	for <-restart {
 		log.Debug().Msg("restarting backend...")
 		stopServer(existingServer)
 		existingServer = startServerInBackground(true)
-		log.Debug().Msg("✅ restarted backend..")
+		log.Debug().Msg("✅ restarted backend")
 	}
 
 	return nil
 }
 
-func installYarn1() {
-	log.Debug().Msg("install yarn1")
-	cmd := exec.Command("npm", "install", "-g", "yarn@1", "--force", "--silent")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to install yarn1", err)
-	log.Debug().Msg("✅ installed yarn1")
+func setupPaths() (paths, error) {
+	backend, err := os.Getwd()
+	if err != nil {
+		return paths{}, fmt.Errorf("get current dir: %w", err)
+	}
+	startPath := filepath.Dir(backend)
+	dirs := strings.Split(startPath, string(os.PathSeparator))
+	if len(dirs) < 2 {
+		return paths{}, fmt.Errorf("invalid path structure")
+	}
+	return paths{
+		backend:  backend,
+		frontend: path.Join(startPath, "frontend"),
+		orgName:  dirs[len(dirs)-2],
+	}, nil
 }
 
-func installFrontendDependencies() {
+func installDependencies(frontendPath string) error {
+	for _, fn := range []func() error{
+		installBun,
+		func() error { return installFrontendDependencies(frontendPath) },
+		installPrettier,
+		installSqlBoiler,
+		installSqlBoilerMysqlDriver,
+	} {
+		if err := fn(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installBun() error {
+	log.Debug().Msg("install bun")
+	cmd := exec.Command("npm", "install", "-g", "bun@latest", "--force", "--silent")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func installFrontendDependencies(frontendPath string) error {
 	log.Debug().Msg("install frontend dependencies")
-	cmd := exec.Command("yarn", "install")
-	cmd.Dir = "../frontend"
+	cmd := exec.Command("bun", "install")
+	cmd.Dir = frontendPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to install frontend dependencies", err)
-	log.Debug().Msg("✅ installed frontend dependencies")
+	return cmd.Run()
 }
 
-func installPrettier() {
+func installPrettier() error {
 	log.Debug().Msg("install prettier")
 	cmd := exec.Command("npm", "install", "-g", "prettier@latest", "--force", "--silent")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to install prettier", err)
-	log.Debug().Msg("✅ installed prettier")
+	return cmd.Run()
 }
 
-func installSqlBoiler() {
+func installSqlBoiler() error {
 	log.Debug().Msg("install sqlboiler")
 	cmd := exec.Command("go", "install", "github.com/aarondl/sqlboiler/v4@latest")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to install sqlboiler", err)
-
-	log.Debug().Msg("✅ installed sqlboiler")
+	return cmd.Run()
 }
 
-func installSqlBoilerMysqlDriver() {
+func installSqlBoilerMysqlDriver() error {
 	log.Debug().Msg("install sqlboiler mysql driver")
 	cmd := exec.Command("go", "install", "github.com/aarondl/sqlboiler/v4/drivers/sqlboiler-mysql@latest")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to install sqlboiler mysql driver", err)
-
-	log.Debug().Msg("✅ installed sqlboiler mysql driver")
+	return cmd.Run()
 }
 
 func notify(title, message string) {
-	err := beeep.Notify(title, message, "./icon.png")
-	checkError("could not notify", err)
+	if err := beeep.Notify(title, message, "./icon.png"); err != nil {
+		log.Error().Err(err).Msg("could not notify")
+	}
 }
 
-func stopServer(existingServer *exec.Cmd) {
-	// https://stackoverflow.com/a/68179972/2508481
-	// Send kill signal to the process group instead of single process (it gets the same value as the PID, only negative)
-
-	if existingServer != nil && existingServer.Process != nil {
-
-		//TODO: implement global kill for all systems
-		specific.Kill(existingServer)
+func stopServer(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		specific.Kill(cmd)
 	}
 	killPortProcess(port)
 }
@@ -191,150 +192,117 @@ func startServerInBackground(restart bool) *exec.Cmd {
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// https://stackoverflow.com/a/68179972/2508481
-	// Request the OS to assign process group to the new process, to which all its children will belong
-	// cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.SysProcAttr = &syscall.SysProcAttr{}
 
 	go func() {
-		err := cmd.Run()
-		if err != nil {
-			checkServerError(err)
+		if err := cmd.Run(); err != nil && !strings.Contains(err.Error(), "signal: killed") {
+			notify("Server Error", "failed to run server")
+			log.Error().Err(err).Msg("failed to run server")
 		}
-		defer func() {
-			stopServer(cmd)
-		}()
+		stopServer(cmd)
 	}()
 
 	return cmd
 }
 
-func checkServerError(err error) {
-	if err != nil && strings.Contains(err.Error(), "signal: killed") {
-		return
+func runInitialSetup() error {
+	for _, fn := range []func() error{
+		dropDatabase,
+		runMigrations,
+		runMergeSchemasWithRelay,
+		runConvertPlugin,
+		runSeeder,
+	} {
+		if err := fn(); err != nil {
+			return err
+		}
 	}
-	checkError("failed to run server", err)
+	return nil
 }
 
-func runMigrations() {
+func runMigrations() error {
 	log.Debug().Msg("run migrations")
 	cmd := exec.Command("go", "run", "migrate.go")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to run migrations", err)
-	log.Debug().Msg("✅ done migrating!")
-	return
+	return cmd.Run()
 }
 
-func dropDatabase() {
+func dropDatabase() error {
 	log.Debug().Msg("drop db")
 	name := os.Getenv("DATABASE_NAME")
-	var err error
-	_, err = db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%v`", name))
-	checkErrorWithFatal("could not drop database", err)
+	_, err := db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%v`", name))
+	if err != nil {
+		return fmt.Errorf("drop database: %w", err)
+	}
 	_, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%v`", name))
-	checkErrorWithFatal("could not create database", err)
-	log.Debug().Msg("✅ dropped db!")
+	if err != nil {
+		return fmt.Errorf("create database: %w", err)
+	}
+	log.Debug().Msg("✅ dropped db")
+	return nil
 }
 
-func runConvertPlugin() {
-	log.Debug().Msg("start convert/convert.go")
-
+func runConvertPlugin() error {
+	log.Debug().Msg("run convert/convert.go")
 	cmd := exec.Command("go", "run", "convert.go")
 	cmd.Dir = "./convert"
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to run convert/convert.go", err)
-
-	log.Debug().Msg("✅ done convert/convert.go")
+	return cmd.Run()
 }
 
 func killPortProcess(port string) {
+	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		command := fmt.Sprintf("(Get-NetTCPConnection -LocalPort %s).OwningProcess", port)
-		execKillCommand(exec.Command("powershell", "-Command", fmt.Sprintf("& {Stop-Process -Id (%s) -Force}", command)))
+		cmd = exec.Command("powershell", "-Command", fmt.Sprintf("Stop-Process -Id (Get-NetTCPConnection -LocalPort %s).OwningProcess -Force", port))
 	} else {
-		command := fmt.Sprintf("lsof -i tcp:%s | grep LISTEN | awk '{print $2}' | xargs kill -9", port)
-		execKillCommand(exec.Command("bash", "-c", command))
+		cmd = exec.Command("bash", "-c", fmt.Sprintf("lsof -i tcp:%s | grep LISTEN | awk '{print $2}' | xargs kill -9", port))
 	}
-}
-
-// Execute command and return exited code.
-func execKillCommand(cmd *exec.Cmd) {
-	var waitStatus syscall.WaitStatus
 	if err := cmd.Run(); err != nil {
-		if err != nil {
-			os.Stderr.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
-		}
-		if exitError, ok := err.(*exec.ExitError); ok {
-			waitStatus = exitError.Sys().(syscall.WaitStatus)
-			fmt.Printf("Error during killing (exit code: %s)\n", []byte(fmt.Sprintf("%d", waitStatus.ExitStatus())))
-		}
-	} else {
-		waitStatus = cmd.ProcessState.Sys().(syscall.WaitStatus)
-		fmt.Printf("Port successfully killed (exit code: %s)\n", []byte(fmt.Sprintf("%d", waitStatus.ExitStatus())))
+		log.Debug().Err(err).Msg("error killing port process")
 	}
 }
 
-func runMergeSchemasWithRelay() {
-	runMergeSchemas()
-	runRelay()
+func runMergeSchemasWithRelay() error {
+	if err := runMergeSchemas(); err != nil {
+		return err
+	}
+	return runRelay()
 }
 
-func runMergeSchemas() {
+func runMergeSchemas() error {
 	log.Debug().Msg("run merge-schemas")
-
-	cmd := exec.Command("yarn", "merge-schemas")
+	cmd := exec.Command("bun", "run", "merge-schemas")
 	cmd.Dir = "../frontend"
-	// cmd.Stdout = os.Stdout
-	// cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to run convert/convert.go", err)
-
-	log.Debug().Msg("✅ done with merge-schemas")
+	return cmd.Run()
 }
 
-func runRelay() {
+func runRelay() error {
 	log.Debug().Msg("run relay.dev")
-
-	cmd := exec.Command("yarn", "relay")
+	cmd := exec.Command("bun", "run", "relay")
 	cmd.Dir = "../frontend"
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	checkError("failed to run convert/convert.go", err)
-
-	log.Debug().Msg("✅ done with relay.dev")
+	return cmd.Run()
 }
 
-func runSeeder() {
-	log.Debug().Msg("start seed/seed.go")
-
+func runSeeder() error {
+	log.Debug().Msg("run seed/seed.go")
 	cmd := exec.Command("go", "run", "seed.go")
 	cmd.Dir = "./seed"
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, "DATABASE_DEBUG=false")
-	err := cmd.Run()
-	checkError("failed to run seed/seed.go", err)
-
-	log.Debug().Msg("✅ done seed/seed.go")
+	cmd.Env = append(os.Environ(), "DATABASE_DEBUG=false")
+	return cmd.Run()
 }
 
 func watch(backendPath, frontendPath string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Fatal().Err(err).Msg("can not start file watcher")
+		log.Fatal().Err(err).Msg("cannot start file watcher")
 	}
-	defer func(watcher *fsnotify.Watcher) {
-		err := watcher.Close()
-		if err != nil {
-			log.Fatal().Err(err).Msg("could not stop file watcher")
-		}
-	}(watcher)
+	defer watcher.Close()
 
 	done := make(chan bool)
 	go func() {
@@ -345,28 +313,25 @@ func watch(backendPath, frontendPath string) {
 					return
 				}
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					// log.Debug().Str("file", event.Name).Msg("modified file")
 					fileChanged(event)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				log.Err(err).Msg("error while watching files")
+				log.Error().Err(err).Msg("error while watching files")
 			}
 		}
 	}()
 
-	filesOrDirectoriesToWatch := getDirectoryWithSubDirectories()
-
-	filesOrDirectoriesToWatch = append(filesOrDirectoriesToWatch, []string{
+	watchPaths := append(getDirectoryWithSubDirectories(),
 		"../frontend/schema_custom.graphql",
 		"../frontend/src/__generated__",
-	}...)
-	// fmt.Println(filesOrDirectoriesToWatch)
-	for _, w := range filesOrDirectoriesToWatch {
-		err = watcher.Add(w)
-		checkError(fmt.Sprintf("failed to watch %v", w), err)
+	)
+	for _, w := range watchPaths {
+		if err := watcher.Add(w); err != nil {
+			log.Error().Err(err).Str("path", w).Msg("failed to watch path")
+		}
 	}
 
 	<-done
@@ -375,22 +340,38 @@ func watch(backendPath, frontendPath string) {
 var debounced = debounce.New(200 * time.Millisecond)
 
 func runSqlChanged() {
-	dropDatabase()
-	runMigrations()
-	runConvertPlugin()
-	runSeeder()
-	runMergeSchemasWithRelay()
+	if err := dropDatabase(); err != nil {
+		log.Fatal().Err(err).Msg("sql changed: drop database")
+	}
+	if err := runMigrations(); err != nil {
+		log.Fatal().Err(err).Msg("sql changed: run migrations")
+	}
+	if err := runConvertPlugin(); err != nil {
+		log.Fatal().Err(err).Msg("sql changed: run convert plugin")
+	}
+	if err := runSeeder(); err != nil {
+		log.Fatal().Err(err).Msg("sql changed: run seeder")
+	}
+	if err := runMergeSchemasWithRelay(); err != nil {
+		log.Fatal().Err(err).Msg("sql changed: run merge schemas with relay")
+	}
 	restart <- true
 }
 
 func runSchemaChanged() {
-	runConvertPlugin()
-	runMergeSchemasWithRelay()
+	if err := runConvertPlugin(); err != nil {
+		log.Fatal().Err(err).Msg("schema changed: run convert plugin")
+	}
+	if err := runMergeSchemasWithRelay(); err != nil {
+		log.Fatal().Err(err).Msg("schema changed: run merge schemas with relay")
+	}
 	restart <- true
 }
 
 func runSeedChanged() {
-	runSeeder()
+	if err := runSeeder(); err != nil {
+		log.Fatal().Err(err).Msg("seed changed: run seeder")
+	}
 }
 
 func runGoChanged() {
@@ -398,92 +379,69 @@ func runGoChanged() {
 }
 
 func runMigrationsChanged() {
-	runMigrations()
-	runConvertPlugin()
+	if err := runMigrations(); err != nil {
+		log.Fatal().Err(err).Msg("migrations changed: run migrations")
+	}
+	if err := runConvertPlugin(); err != nil {
+		log.Fatal().Err(err).Msg("migrations changed: run convert plugin")
+	}
 	restart <- true
 }
 
 func fileChanged(event fsnotify.Event) {
-	envChanged := strings.Contains(event.Name, ".env")
-
-	sqlChanged := strings.Contains(event.Name, ".sql")
-	schemaChanged := strings.Contains(event.Name, ".graphql")
-	seedChanged := strings.Contains(event.Name, "seed/")
-	generatedChanged := strings.Contains(event.Name, "__generated__/")
-	migrationsChanged := strings.Contains(event.Name, "migrations/")
-	goChanged := strings.Contains(event.Name, ".go") || strings.Contains(event.Name, ".gohtml")
-	goGeneratedChanged := strings.Contains(event.Name, "generated_") && goChanged
-
 	log.Debug().Str("file", event.Name).Msg("modified file")
 
-	// we only change models from here so we don't need to subscribe
-	if goGeneratedChanged {
-		log.Debug().Msg("generated files from go changed, do nothing")
+	isGeneratedGo := strings.Contains(event.Name, "generated_") &&
+		(strings.Contains(event.Name, ".go") || strings.Contains(event.Name, ".gohtml"))
+	if isGeneratedGo || strings.Contains(event.Name, "__generated__/") {
+		log.Debug().Msg("generated files changed, skipping")
 		return
 	}
 
-	switch true {
-	case generatedChanged:
-		log.Debug().Msg("generated files relay.dev changed, do nothing")
-	case sqlChanged:
+	switch {
+	case strings.Contains(event.Name, ".sql"):
 		log.Debug().Msg("sql changed, run migrations + convert plugin")
 		debounced(runSqlChanged)
-	case schemaChanged:
-		log.Debug().Msg("run convert & merge schema's with relay")
+	case strings.Contains(event.Name, ".graphql"):
+		log.Debug().Msg("run convert & merge schemas with relay")
 		debounced(runSchemaChanged)
-	case seedChanged:
-		log.Debug().Msg("re-rerun seed.go")
+	case strings.Contains(event.Name, "seed/"):
+		log.Debug().Msg("re-run seed.go")
 		debounced(runSeedChanged)
-	case goChanged, envChanged:
-		log.Debug().Bool("goChanged", goChanged).Bool("envChanged", envChanged).Msg("restart server")
+	case strings.Contains(event.Name, ".env") ||
+		strings.Contains(event.Name, ".go") ||
+		strings.Contains(event.Name, ".gohtml"):
+		log.Debug().Msg("restart server")
 		debounced(runGoChanged)
-	case migrationsChanged:
-		log.Debug().Bool("migrationsChanged", migrationsChanged).Msg("run migrations + convert plugin")
+	case strings.Contains(event.Name, "migrations/"):
+		log.Debug().Msg("run migrations + convert plugin")
 		debounced(runMigrationsChanged)
 	}
 }
 
 func startDbInDocker() *exec.Cmd {
 	cmd := exec.Command("docker", "compose", "up", "-d", "db")
-	// cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	checkError("failed to start db", cmd.Run())
+	if err := cmd.Run(); err != nil {
+		notify("DB Error", "failed to start db")
+		log.Fatal().Err(err).Msg("failed to start db")
+	}
 	return cmd
 }
 
-func checkError(s string, err error) {
-	if err != nil {
-		notify("Error 🔥🔥🔥", s)
-		log.Error().Err(err).Msg("🔥🔥🔥 " + s)
-	}
-}
-
-func checkErrorWithFatal(s string, err error) {
-	if err != nil {
-		notify("Fatal Error 🔥🔥🔥", s)
-		log.Fatal().Err(err).Msg("🔥🔥🔥 " + s)
-	}
-}
-
 func getDirectoryWithSubDirectories() []string {
-	var a []string
-	a = append(a, "./")
-	err := filepath.Walk(".",
-		func(path string, info os.FileInfo, err error) error {
-			checkErrorWithFatal("walking files", err)
-
-			if info.IsDir() {
-				if strings.Contains(path, "models/") {
-					return nil
-				}
-				if strings.Contains(path, ".idea") {
-					return nil
-				}
-				a = append(a, path)
-			}
-
-			return nil
-		})
-	checkErrorWithFatal("could not get dir with sub dirs", err)
-	return a
+	var dirs []string
+	dirs = append(dirs, "./")
+	if err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			log.Fatal().Err(err).Msg("walking files")
+		}
+		if info.IsDir() && !strings.Contains(path, "models/") && !strings.Contains(path, ".idea") {
+			dirs = append(dirs, path)
+		}
+		return nil
+	}); err != nil {
+		log.Fatal().Err(err).Msg("could not get dir with sub dirs")
+	}
+	return dirs
 }
