@@ -34,7 +34,7 @@ type paths struct {
 	backend  string
 	frontend string
 	orgName  string
-}
+)
 
 func main() {
 	helpers.ConfigureLogger()
@@ -217,55 +217,61 @@ func stopServer(cmd *exec.Cmd) {
 }
 
 func startServerInBackground(restart bool) *exec.Cmd {
-	killPortProcess(port)
+	for attempt := 1; ; attempt++ {
+		killPortProcess(port)
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd.exe", "/C", fmt.Sprintf("set WR_RESTART=%v && go run server.go", restart))
-	} else {
-		cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
-	}
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd.exe", "/C", fmt.Sprintf("set WR_RESTART=%v && go run server.go", restart))
+		} else {
+			cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
+		}
 
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// Start server and monitor its health
-	go func() {
-		for attempt := 1; attempt <= 3; attempt++ {
+		// Start server in a goroutine to allow retries
+		serverStarted := make(chan bool, 1)
+		go func() {
 			if err := cmd.Run(); err != nil && !strings.Contains(err.Error(), "signal: killed") {
 				log.Error().Err(err).Int("attempt", attempt).Msg("failed to run server")
 				notify("Server Error", fmt.Sprintf("Failed to run server (attempt %d): %v", attempt, err))
-				if attempt < 3 {
-					log.Info().Int("attempt", attempt).Msg("retrying server start")
-					time.Sleep(time.Second * time.Duration(attempt))
-					killPortProcess(port)
-					// Recreate command for retry
-					if runtime.GOOS == "windows" {
-						cmd = exec.Command("cmd.exe", "/C", fmt.Sprintf("set WR_RESTART=%v && go run server.go", restart))
-					} else {
-						cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
-					}
-					cmd.Stdout = os.Stdout
-					cmd.Stderr = os.Stderr
-					cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-					continue
-				}
+				serverStarted <- false
+			} else {
+				serverStarted <- true
 			}
-			break
+		}()
+
+		// Wait to verify server startup
+		time.Sleep(500 * time.Millisecond)
+		if cmd.Process == nil || cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+			log.Error().Int("attempt", attempt).Msg("server failed to start or exited immediately")
+			notify("Server Error", fmt.Sprintf("Server failed to start or exited immediately (attempt %d)", attempt))
+			time.Sleep(time.Second * time.Duration(attempt))
+			continue
 		}
-	}()
 
-	// Wait to verify server startup
-	time.Sleep(500 * time.Millisecond)
-	if cmd.Process == nil || cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-		log.Error().Msg("server failed to start or exited immediately")
-		notify("Server Error", "Server failed to start or exited immediately")
-		return nil
+		// Check if the server started successfully
+		select {
+		case success := <-serverStarted:
+			if !success {
+				time.Sleep(time.Second * time.Duration(attempt))
+				continue
+			}
+		case <-time.After(2 * time.Second):
+			log.Error().Int("attempt", attempt).Msg("server startup timed out")
+			notify("Server Error", fmt.Sprintf("Server startup timed out (attempt %d)", attempt))
+			if cmd.Process != nil {
+				specific.Kill(cmd)
+			}
+			time.Sleep(time.Second * time.Duration(attempt))
+			continue
+		}
+
+		log.Info().Int("attempt", attempt).Msg("✅ server started successfully")
+		return cmd
 	}
-
-	log.Info().Msg("✅ server started successfully")
-	return cmd
 }
 
 func startDbInDocker() *exec.Cmd {
@@ -515,39 +521,4 @@ func fileChanged(event fsnotify.Event) {
 
 	switch {
 	case strings.Contains(event.Name, ".sql"):
-		log.Debug().Msg("sql changed, running migrations + convert plugin")
-		debounced(runSqlChanged)
-	case strings.Contains(event.Name, ".graphql"):
-		log.Debug().Msg("graphql schema changed, running convert & merge schemas with relay")
-		debounced(runSchemaChanged)
-	case strings.Contains(event.Name, "seed/"):
-		log.Debug().Msg("seed files changed, re-running seed.go")
-		debounced(runSeedChanged)
-	case strings.Contains(event.Name, ".env") ||
-		strings.Contains(event.Name, ".go") ||
-		strings.Contains(event.Name, ".gohtml"):
-		log.Debug().Msg("go or env files changed, restarting server")
-		debounced(runGoChanged)
-	case strings.Contains(event.Name, "migrations/"):
-		log.Debug().Msg("migrations changed, running migrations + convert plugin")
-		debounced(runMigrationsChanged)
-	}
-}
-
-func getDirectoryWithSubDirectories() []string {
-	var dirs []string
-	dirs = append(dirs, "./")
-	if err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			log.Error().Err(err).Msg("walking files")
-			return err
-		}
-		if info.IsDir() && !strings.Contains(path, "models/") && !strings.Contains(path, ".idea") {
-			dirs = append(dirs, path)
-		}
-		return nil
-	}); err != nil {
-		log.Error().Err(err).Msg("could not get dir with sub dirs")
-	}
-	return dirs
-}
+		log.Debug().Msg("sql changed,
