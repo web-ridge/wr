@@ -217,69 +217,42 @@ func stopServer(cmd *exec.Cmd) {
 }
 
 func startServerInBackground(restart bool) *exec.Cmd {
-	for attempt := 1; ; attempt++ {
-		killPortProcess(port)
+	killPortProcess(port)
 
-		var cmd *exec.Cmd
-		if runtime.GOOS == "windows" {
-			cmd = exec.Command("cmd.exe", "/C", fmt.Sprintf("set WR_RESTART=%v && go run server.go", restart))
-		} else {
-			cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
-		}
-
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-		// Start server in a goroutine to allow retries
-		serverStarted := make(chan bool, 1)
-		go func() {
-			if err := cmd.Run(); err != nil && !strings.Contains(err.Error(), "signal: killed") {
-				log.Error().Err(err).Int("attempt", attempt).Msg("failed to run server")
-				notify("Server Error", fmt.Sprintf("Failed to run server (attempt %d): %v", attempt, err))
-				serverStarted <- false
-			} else {
-				serverStarted <- true
-			}
-		}()
-
-		// Wait to verify server startup
-		time.Sleep(500 * time.Millisecond)
-		if cmd.Process == nil || cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			log.Error().Int("attempt", attempt).Msg("server failed to start or exited immediately")
-			notify("Server Error", fmt.Sprintf("Server failed to start or exited immediately (attempt %d)", attempt))
-			time.Sleep(time.Second * time.Duration(attempt))
-			continue
-		}
-
-		// Check if the server started successfully
-		select {
-		case success := <-serverStarted:
-			if !success {
-				time.Sleep(time.Second * time.Duration(attempt))
-				continue
-			}
-		case <-time.After(2 * time.Second):
-			log.Error().Int("attempt", attempt).Msg("server startup timed out")
-			notify("Server Error", fmt.Sprintf("Server startup timed out (attempt %d)", attempt))
-			if cmd.Process != nil {
-				specific.Kill(cmd)
-			}
-			time.Sleep(time.Second * time.Duration(attempt))
-			continue
-		}
-
-		log.Info().Int("attempt", attempt).Msg("✅ server started successfully")
-		return cmd
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd.exe", "/C", fmt.Sprintf("set WR_RESTART=%v && go run server.go", restart))
+	} else {
+		cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
 	}
+
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Ensure process group is set for proper cleanup
+
+	go func() {
+		if err := cmd.Run(); err != nil && !strings.Contains(err.Error(), "signal: killed") {
+			notify("Server Error", fmt.Sprintf("failed to run server: %v", err))
+			log.Error().Err(err).Msg("failed to run server")
+		}
+	}()
+
+	// Wait briefly to check if the server started successfully
+	time.Sleep(500 * time.Millisecond)
+	if cmd.Process == nil || cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		log.Error().Msg("server failed to start or exited immediately")
+		return nil
+	}
+
+	return cmd
 }
 
 func startDbInDocker() *exec.Cmd {
 	cmd := exec.Command("docker", "compose", "up", "-d", "db")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Error().Err(err).Msg("failed to start db")
 		notify("DB Error", "failed to start db")
+		log.Fatal().Err(err).Msg("failed to start db")
 	}
 	return cmd
 }
@@ -388,18 +361,16 @@ func runSeeder() error {
 func watch(backendPath, frontendPath string) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Error().Err(err).Msg("cannot start file watcher, continuing without watching")
-		notify("Watcher Error", "Failed to start file watcher; manual restarts required")
-		return
+		log.Fatal().Err(err).Msg("cannot start file watcher")
 	}
 	defer watcher.Close()
 
+	done := make(chan bool)
 	go func() {
 		for {
 			select {
 			case event, ok := <-watcher.Events:
 				if !ok {
-					log.Warn().Msg("file watcher channel closed")
 					return
 				}
 				if event.Op&fsnotify.Write == fsnotify.Write {
@@ -407,14 +378,9 @@ func watch(backendPath, frontendPath string) {
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
-					log.Warn().Msg("file watcher error channel closed")
 					return
 				}
 				log.Error().Err(err).Msg("error while watching files")
-				notify("Watcher Error", fmt.Sprintf("File watching error: %v", err))
-			case <-quit:
-				log.Info().Msg("stopping file watcher")
-				return
 			}
 		}
 	}()
@@ -426,86 +392,60 @@ func watch(backendPath, frontendPath string) {
 	for _, w := range watchPaths {
 		if err := watcher.Add(w); err != nil {
 			log.Error().Err(err).Str("path", w).Msg("failed to watch path")
-			notify("Watcher Error", fmt.Sprintf("Failed to watch path %s: %v", w, err))
 		}
 	}
 
-	<-quit
+	<-done
 }
 
 var debounced = debounce.New(200 * time.Millisecond)
 
 func runSqlChanged() {
 	if err := dropDatabase(); err != nil {
-		log.Error().Err(err).Msg("sql changed: failed to drop database")
-		notify("SQL Error", fmt.Sprintf("Failed to drop database: %v", err))
-		return
+		log.Fatal().Err(err).Msg("sql changed: drop database")
 	}
 	if err := runMigrations(); err != nil {
-		log.Error().Err(err).Msg("sql changed: failed to run migrations")
-		notify("SQL Error", fmt.Sprintf("Failed to run migrations: %v", err))
-		return
+		log.Fatal().Err(err).Msg("sql changed: run migrations")
 	}
 	if err := runConvertPlugin(); err != nil {
-		log.Error().Err(err).Msg("sql changed: failed to run convert plugin")
-		notify("SQL Error", fmt.Sprintf("Failed to run convert plugin: %v", err))
-		return
+		log.Fatal().Err(err).Msg("sql changed: run convert plugin")
 	}
 	if err := runSeeder(); err != nil {
-		log.Error().Err(err).Msg("sql changed: failed to run seeder")
-		notify("SQL Error", fmt.Sprintf("Failed to run seeder: %v", err))
-		return
+		log.Fatal().Err(err).Msg("sql changed: run seeder")
 	}
 	if err := runMergeSchemasWithRelay(); err != nil {
-		log.Error().Err(err).Msg("sql changed: failed to run merge schemas with relay")
-		notify("SQL Error", fmt.Sprintf("Failed to run merge schemas with relay: %v", err))
-		return
+		log.Fatal().Err(err).Msg("sql changed: run merge schemas with relay")
 	}
-	log.Info().Msg("✅ sql changes applied successfully")
 	restart <- true
 }
 
 func runSchemaChanged() {
 	if err := runConvertPlugin(); err != nil {
-		log.Error().Err(err).Msg("schema changed: failed to run convert plugin")
-		notify("Schema Error", fmt.Sprintf("Failed to run convert plugin: %v", err))
-		return
+		log.Fatal().Err(err).Msg("schema changed: run convert plugin")
 	}
 	if err := runMergeSchemasWithRelay(); err != nil {
-		log.Error().Err(err).Msg("schema changed: failed to run merge schemas with relay")
-		notify("Schema Error", fmt.Sprintf("Failed to run merge schemas with relay: %v", err))
-		return
+		log.Fatal().Err(err).Msg("schema changed: run merge schemas with relay")
 	}
-	log.Info().Msg("✅ schema changes applied successfully")
 	restart <- true
 }
 
 func runSeedChanged() {
 	if err := runSeeder(); err != nil {
-		log.Error().Err(err).Msg("seed changed: failed to run seeder")
-		notify("Seed Error", fmt.Sprintf("Failed to run seeder: %v", err))
-		return
+		log.Fatal().Err(err).Msg("seed changed: run seeder")
 	}
-	log.Info().Msg("✅ seed changes applied successfully")
 }
 
 func runGoChanged() {
-	log.Info().Msg("✅ go files changed, triggering restart")
 	restart <- true
 }
 
 func runMigrationsChanged() {
 	if err := runMigrations(); err != nil {
-		log.Error().Err(err).Msg("migrations changed: failed to run migrations")
-		notify("Migration Error", fmt.Sprintf("Failed to run migrations: %v", err))
-		return
+		log.Fatal().Err(err).Msg("migrations changed: run migrations")
 	}
 	if err := runConvertPlugin(); err != nil {
-		log.Error().Err(err).Msg("migrations changed: failed to run convert plugin")
-		notify("Migration Error", fmt.Sprintf("Failed to run convert plugin: %v", err))
-		return
+		log.Fatal().Err(err).Msg("migrations changed: run convert plugin")
 	}
-	log.Info().Msg("✅ migrations applied successfully")
 	restart <- true
 }
 
@@ -521,21 +461,21 @@ func fileChanged(event fsnotify.Event) {
 
 	switch {
 	case strings.Contains(event.Name, ".sql"):
-		log.Debug().Msg("sql changed, running migrations + convert plugin")
+		log.Debug().Msg("sql changed, run migrations + convert plugin")
 		debounced(runSqlChanged)
 	case strings.Contains(event.Name, ".graphql"):
-		log.Debug().Msg("graphql schema changed, running convert & merge schemas with relay")
+		log.Debug().Msg("run convert & merge schemas with relay")
 		debounced(runSchemaChanged)
 	case strings.Contains(event.Name, "seed/"):
-		log.Debug().Msg("seed files changed, re-running seed.go")
+		log.Debug().Msg("re-run seed.go")
 		debounced(runSeedChanged)
 	case strings.Contains(event.Name, ".env") ||
 		strings.Contains(event.Name, ".go") ||
 		strings.Contains(event.Name, ".gohtml"):
-		log.Debug().Msg("go or env files changed, restarting server")
+		log.Debug().Msg("restart server")
 		debounced(runGoChanged)
 	case strings.Contains(event.Name, "migrations/"):
-		log.Debug().Msg("migrations changed, running migrations + convert plugin")
+		log.Debug().Msg("run migrations + convert plugin")
 		debounced(runMigrationsChanged)
 	}
 }
@@ -545,15 +485,14 @@ func getDirectoryWithSubDirectories() []string {
 	dirs = append(dirs, "./")
 	if err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			log.Error().Err(err).Msg("walking files")
-			return err
+			log.Fatal().Err(err).Msg("walking files")
 		}
 		if info.IsDir() && !strings.Contains(path, "models/") && !strings.Contains(path, ".idea") {
 			dirs = append(dirs, path)
 		}
 		return nil
 	}); err != nil {
-		log.Error().Err(err).Msg("could not get dir with sub dirs")
+		log.Fatal().Err(err).Msg("could not get dir with sub dirs")
 	}
 	return dirs
 }
