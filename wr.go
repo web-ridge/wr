@@ -521,4 +521,39 @@ func fileChanged(event fsnotify.Event) {
 
 	switch {
 	case strings.Contains(event.Name, ".sql"):
-		log.Debug().Msg("sql changed,
+		log.Debug().Msg("sql changed, running migrations + convert plugin")
+		debounced(runSqlChanged)
+	case strings.Contains(event.Name, ".graphql"):
+		log.Debug().Msg("graphql schema changed, running convert & merge schemas with relay")
+		debounced(runSchemaChanged)
+	case strings.Contains(event.Name, "seed/"):
+		log.Debug().Msg("seed files changed, re-running seed.go")
+		debounced(runSeedChanged)
+	case strings.Contains(event.Name, ".env") ||
+		strings.Contains(event.Name, ".go") ||
+		strings.Contains(event.Name, ".gohtml"):
+		log.Debug().Msg("go or env files changed, restarting server")
+		debounced(runGoChanged)
+	case strings.Contains(event.Name, "migrations/"):
+		log.Debug().Msg("migrations changed, running migrations + convert plugin")
+		debounced(runMigrationsChanged)
+	}
+}
+
+func getDirectoryWithSubDirectories() []string {
+	var dirs []string
+	dirs = append(dirs, "./")
+	if err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			log.Error().Err(err).Msg("walking files")
+			return err
+		}
+		if info.IsDir() && !strings.Contains(path, "models/") && !strings.Contains(path, ".idea") {
+			dirs = append(dirs, path)
+		}
+		return nil
+	}); err != nil {
+		log.Error().Err(err).Msg("could not get dir with sub dirs")
+	}
+	return dirs
+}
