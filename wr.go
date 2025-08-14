@@ -34,7 +34,7 @@ type paths struct {
 	backend  string
 	frontend string
 	orgName  string
-)
+}
 
 func main() {
 	helpers.ConfigureLogger()
@@ -272,8 +272,8 @@ func startDbInDocker() *exec.Cmd {
 	cmd := exec.Command("docker", "compose", "up", "-d", "db")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		notify("DB Error", "failed to start db")
 		log.Error().Err(err).Msg("failed to start db")
+		notify("DB Error", "failed to start db")
 	}
 	return cmd
 }
@@ -539,14 +539,15 @@ func getDirectoryWithSubDirectories() []string {
 	dirs = append(dirs, "./")
 	if err := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			log.Fatal().Err(err).Msg("walking files")
+			log.Error().Err(err).Msg("walking files")
+			return err
 		}
 		if info.IsDir() && !strings.Contains(path, "models/") && !strings.Contains(path, ".idea") {
 			dirs = append(dirs, path)
 		}
 		return nil
 	}); err != nil {
-		log.Fatal().Err(err).Msg("could not get dir with sub dirs")
+		log.Error().Err(err).Msg("could not get dir with sub dirs")
 	}
 	return dirs
 }
