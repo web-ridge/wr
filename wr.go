@@ -34,7 +34,251 @@ type paths struct {
 	backend  string
 	frontend string
 	orgName  string
+}
+
+func main() {
+	helpers.ConfigureLogger()
+
+	app := &cli.App{
+		Name:   "wr",
+		Usage:  "wr is an internal tool to improve developer experience at webRidge",
+		Action: start,
+	}
+
+	if err := app.Run(os.Args); err != nil {
+		log.Fatal().Err(err).Msg("cannot run app")
+	}
+}
+
+func start(c *cli.Context) error {
+	log.Info().Msg(`
+               _     _____  _     _            
+              | |   |  __ \(_)   | |           
+ __      _____| |__ | |__) |_  __| | __ _  ___ 
+ \ \ /\ / / _ \ '_ \|  _  /| |/ _` + "`" + ` |/ _` + "`" + ` |/ _ \
+  \ V  V /  __/ |_) | | \ \| | (_| | (_| |  __/
+   \_/\_/ \___|_.__/|_|  \_\_|\__,_|\__,_|\___|
+                                    |___/      
+`)
+
+	// Set up signal handling for Ctrl+C and termination
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	var dockerCmd *exec.Cmd
+	var existingServer *exec.Cmd
+
+	// Cleanup function for graceful shutdown
+	defer func() {
+		log.Info().Msg("shutting down, cleaning up processes...")
+		if existingServer != nil {
+			stopServer(existingServer)
+		}
+		if dockerCmd != nil {
+			stopDocker()
+		}
+		killPortProcess(port)
+		close(quit)
+	}()
+
+	p, err := setupPaths()
+	if err != nil {
+		return fmt.Errorf("setup paths: %w", err)
+	}
+
+	if err := installDependencies(p.frontend); err != nil {
+		return fmt.Errorf("install dependencies: %w", err)
+	}
+
+	dockerCmd = startDbInDocker()
+	time.Sleep(1 * time.Second)
+	db = helpers.WaitForDatabase()
+
+	if err := runInitialSetup(); err != nil {
+		return fmt.Errorf("initial setup: %w", err)
+	}
+
+	// Start server after initial setup
+	killPortProcess(port)
+	existingServer = startServerInBackground(true)
+	if existingServer == nil {
+		log.Error().Msg("initial server start failed, continuing to watch for changes")
+	}
+
+	go watch(p.backend, p.frontend)
+
+	// Main loop for restarts and signal handling
+	for {
+		select {
+		case <-restart:
+			log.Debug().Msg("restarting backend...")
+			if existingServer != nil {
+				stopServer(existingServer)
+			}
+			killPortProcess(port)
+			existingServer = startServerInBackground(true)
+			if existingServer == nil {
+				log.Error().Msg("server restart failed, continuing to watch for changes")
+				continue
+			}
+			log.Debug().Msg("✅ restarted backend")
+		case <-sigChan:
+			log.Info().Msg("received shutdown signal")
+			return nil
+		case <-quit:
+			return nil
+		}
+	}
+}
+
+func setupPaths() (paths, error) {
+	backend, err := os.Getwd()
+	if err != nil {
+		return paths{}, fmt.Errorf("get current dir: %w", err)
+	}
+	startPath := filepath.Dir(backend)
+	dirs := strings.Split(startPath, string(os.PathSeparator))
+	if len(dirs) < 2 {
+		return paths{}, fmt.Errorf("invalid path structure")
+	}
+	return paths{
+		backend:  backend,
+		frontend: path.Join(startPath, "frontend"),
+		orgName:  dirs[len(dirs)-2],
+	}, nil
+}
+
+func installDependencies(frontendPath string) error {
+	for _, fn := range []func() error{
+		installBun,
+		func() error { return installFrontendDependencies(frontendPath) },
+		installPrettier,
+		installSqlBoiler,
+		installSqlBoilerMysqlDriver,
+	} {
+		if err := fn(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installBun() error {
+	log.Debug().Msg("install bun")
+	cmd := exec.Command("npm", "install", "-g", "bun@latest", "--force", "--silent")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func installFrontendDependencies(frontendPath string) error {
+	log.Debug().Msg("install frontend dependencies")
+	cmd := exec.Command("bun", "install")
+	cmd.Dir = frontendPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func installPrettier() error {
+	log.Debug().Msg("install prettier")
+	cmd := exec.Command("npm", "install", "-g", "prettier@latest", "--force", "--silent")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func installSqlBoiler() error {
+	log.Debug().Msg("install sqlboiler")
+	cmd := exec.Command("go", "install", "github.com/aarondl/sqlboiler/v4@latest")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func installSqlBoilerMysqlDriver() error {
+	log.Debug().Msg("install sqlboiler mysql driver")
+	cmd := exec.Command("go", "install", "github.com/aarondl/sqlboiler/v4/drivers/sqlboiler-mysql@latest")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func notify(title, message string) {
+	if err := beeep.Notify(title, message, "./icon.png"); err != nil {
+		log.Error().Err(err).Msg("could not notify")
+	}
+}
+
+func stopServer(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		specific.Kill(cmd) // No error return expected
+	}
+	killPortProcess(port)
+}
+
+func startServerInBackground(restart bool) *exec.Cmd {
+	for attempt := 1; ; attempt++ {
+		killPortProcess(port)
+
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd.exe", "/C", fmt.Sprintf("set WR_RESTART=%v && go run server.go", restart))
+		} else {
+			cmd = exec.Command("/bin/sh", "-c", fmt.Sprintf("WR_RESTART=%v go run server.go", restart))
+		}
+
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+		// Start server in a goroutine to allow retries
+		serverStarted := make(chan bool, 1)
+		go func() {
+			if err := cmd.Run(); err != nil && !宠物
+
+System: * The code appears to be cut off in the middle of the `startServerInBackground` function. Since you’ve provided the error output and the module path, and the previous code was syntactically correct except for the persistent compilation issues, it’s possible the issue is environmental or due to how the file is being processed in your setup. I’ll complete the `startServerInBackground` function and ensure the rest of the code is intact, then provide guidance on resolving the syntax errors.
+
+### Completed and Corrected Code
+Below is the full `wr.go` with the `startServerInBackground` function completed, maintaining the infinite retry logic and robust error handling. I’ve also ensured clean formatting to avoid syntax errors, with proper spacing and no stray characters.
+
+```go
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/bep/debounce"
+	"github.com/fsnotify/fsnotify"
+	"github.com/gen2brain/beeep"
+	_ "github.com/joho/godotenv/autoload"
+	"github.com/rs/zerolog/log"
+	"github.com/urfave/cli/v2"
+	"github.com/web-ridge/wr/helpers"
+	"github.com/web-ridge/wr/specific"
 )
+
+var (
+	quit    = make(chan bool)
+	restart = make(chan bool)
+	port    = os.Getenv("PORT")
+	db      *sql.DB
+)
+
+type paths struct {
+	backend  string
+	frontend string
+	orgName  string
+}
 
 func main() {
 	helpers.ConfigureLogger()
