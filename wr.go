@@ -51,15 +51,6 @@ func main() {
 }
 
 func start(c *cli.Context) error {
-	log.Info().Msg(`
-               _     _____  _     _            
-              | |   |  __ \(_)   | |           
- __      _____| |__ | |__) |_  __| | __ _  ___ 
- \ \ /\ / / _ \ '_ \|  _  /| |/ _` + "`" + ` |/ _` + "`" + ` |/ _ \
-  \ V  V /  __/ |_) | | \ \| | (_| | (_| |  __/
-   \_/\_/ \___|_.__/|_|  \_\_|\__,_|\__,_|\___|
-                                    |___/      
-`)
 
 	// Set up signal handling for Ctrl+C and termination
 	sigChan := make(chan os.Signal, 1)
