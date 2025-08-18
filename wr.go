@@ -94,7 +94,7 @@ func start(c *cli.Context) error {
 	db = helpers.WaitForDatabase()
 
 	if err := runInitialSetup(); err != nil {
-		return fmt.Errorf("initial setup: %w", err)
+		log.Error().Err(err).Msg("runInitialSetup failed, continuing to watch for changes")
 	}
 
 	// Start server after initial setup
@@ -281,8 +281,8 @@ func runInitialSetup() error {
 	for _, fn := range []func() error{
 		dropDatabase,
 		runMigrations,
-		runMergeSchemasWithRelay,
 		runConvertPlugin,
+		runMergeSchemasWithRelay,
 		runSeeder,
 	} {
 		if err := fn(); err != nil {
