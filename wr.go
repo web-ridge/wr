@@ -163,6 +163,11 @@ func installDependencies(frontendPath string) error {
 }
 
 func installBun() error {
+	// Only install Bun if it is not already installed
+	if _, err := exec.LookPath("bun"); err == nil {
+		log.Debug().Msg("bun already installed, skipping installation")
+		return nil
+	}
 	log.Debug().Msg("install bun")
 	cmd := exec.Command("sh", "-c", "curl -fsSL https://bun.com/install | bash")
 	cmd.Stdout = os.Stdout
