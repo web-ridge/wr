@@ -164,7 +164,7 @@ func installDependencies(frontendPath string) error {
 
 func installBun() error {
 	log.Debug().Msg("install bun")
-	cmd := exec.Command("npm", "install", "-g", "bun@latest", "--force", "--silent")
+	cmd := exec.Command("sh", "-c", "curl -fsSL https://bun.com/install | bash")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
