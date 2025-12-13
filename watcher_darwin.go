@@ -56,9 +56,9 @@ func watchNative(backendPath, frontendPath string) {
 			continue
 		}
 
-		// Only process write events
+		// Process write, create, and rename events (rename is used by atomic writes)
 		event := ei.Event()
-		if event&notify.Write == 0 && event&notify.Create == 0 {
+		if event&notify.Write == 0 && event&notify.Create == 0 && event&notify.Rename == 0 {
 			continue
 		}
 

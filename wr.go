@@ -382,7 +382,9 @@ func watch(backendPath, frontendPath string) {
 				if !ok {
 					return
 				}
-				if event.Op&fsnotify.Write == fsnotify.Write {
+				if event.Op&fsnotify.Write == fsnotify.Write ||
+					event.Op&fsnotify.Create == fsnotify.Create ||
+					event.Op&fsnotify.Rename == fsnotify.Rename {
 					fileChanged(event)
 				}
 			case err, ok := <-watcher.Errors:
