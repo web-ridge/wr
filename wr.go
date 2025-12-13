@@ -104,7 +104,11 @@ func start(c *cli.Context) error {
 		log.Error().Msg("initial server start failed, continuing to watch for changes")
 	}
 
-	go watch(p.backend, p.frontend)
+	if useNativeWatcher() {
+		go watchNative(p.backend, p.frontend)
+	} else {
+		go watch(p.backend, p.frontend)
+	}
 
 	// Main loop for restarts and signal handling
 	for {
@@ -208,7 +212,7 @@ func installSqlBoilerMysqlDriver() error {
 	return cmd.Run()
 }
 
-func notify(title, message string) {
+func sendNotification(title, message string) {
 	if err := beeep.Notify(title, message, "./icon.png"); err != nil {
 		log.Error().Err(err).Msg("could not notify")
 	}
@@ -237,7 +241,7 @@ func startServerInBackground(restart bool) *exec.Cmd {
 
 	go func() {
 		if err := cmd.Run(); err != nil && !strings.Contains(err.Error(), "signal: killed") {
-			notify("Server Error", fmt.Sprintf("failed to run server: %v", err))
+			sendNotification("Server Error", fmt.Sprintf("failed to run server: %v", err))
 			log.Error().Err(err).Msg("failed to run server")
 		}
 	}()
@@ -256,7 +260,7 @@ func startDbInDocker() *exec.Cmd {
 	cmd := exec.Command("docker", "compose", "up", "-d", "db")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		notify("DB Error", "failed to start db")
+		sendNotification("DB Error", "failed to start db")
 		log.Fatal().Err(err).Msg("failed to start db")
 	}
 	return cmd
