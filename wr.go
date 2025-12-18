@@ -23,7 +23,6 @@ import (
 	"github.com/urfave/cli/v2"
 	"github.com/web-ridge/wr/helpers"
 	"github.com/web-ridge/wr/specific"
-	"golang.org/x/term"
 )
 
 var (
@@ -653,57 +652,33 @@ func getDirectoryWithSubDirectories() []string {
 }
 
 func printKeyboardShortcuts() {
-	fmt.Println("\n┌─────────────────────────────────────┐")
-	fmt.Println("│         Keyboard Shortcuts          │")
-	fmt.Println("├─────────────────────────────────────┤")
-	fmt.Println("│  r  - Restart server                │")
-	fmt.Println("│  c  - Run convert                   │")
-	fmt.Println("│  s  - Run seeder                    │")
-	fmt.Println("│  m  - Run migrations                │")
-	fmt.Println("│  a  - Run all (migrate+convert+seed)│")
-	fmt.Println("│  h  - Show this help                │")
-	fmt.Println("│ ^C  - Quit                          │")
-	fmt.Println("└─────────────────────────────────────┘\n")
+	fmt.Println("\n┌──────────────────────────────────────────┐")
+	fmt.Println("│     Commands (type + Enter)              │")
+	fmt.Println("├──────────────────────────────────────────┤")
+	fmt.Println("│  r  - Restart server                     │")
+	fmt.Println("│  c  - Run convert                        │")
+	fmt.Println("│  s  - Run seeder                         │")
+	fmt.Println("│  m  - Run migrations                     │")
+	fmt.Println("│  a  - Run all (migrate+convert+seed)     │")
+	fmt.Println("│  h  - Show this help                     │")
+	fmt.Println("│ ^C  - Quit                               │")
+	fmt.Println("└──────────────────────────────────────────┘\n")
 }
 
 func readKeyboardInput(ctx context.Context, keyChan chan<- rune) {
-	// Try to set terminal to raw mode for single keypress reading
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		// Fallback to line-buffered input if raw mode fails
-		log.Debug().Msg("raw terminal mode not available, using line-buffered input")
-		reader := bufio.NewReader(os.Stdin)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					return
-				}
-				if len(line) > 0 {
-					keyChan <- rune(line[0])
-				}
-			}
-		}
-	}
-	defer term.Restore(int(os.Stdin.Fd()), oldState)
-
-	buf := make([]byte, 1)
+	reader := bufio.NewReader(os.Stdin)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
-				continue
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
 			}
-			key := rune(buf[0])
-			// Ignore control characters except Ctrl+C (handled by signal)
-			if key >= 32 && key < 127 {
-				keyChan <- key
+			line = strings.TrimSpace(line)
+			if len(line) > 0 {
+				keyChan <- rune(line[0])
 			}
 		}
 	}
