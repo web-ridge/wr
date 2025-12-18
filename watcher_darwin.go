@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func watchNative(backendPath, frontendPath string) {
+func watchNative(ctx context.Context, backendPath, frontendPath string, goOnly bool) {
 	// Create a channel to receive file system events
 	// Buffer size of 100 to avoid blocking
 	c := make(chan notify.EventInfo, 100)
@@ -39,59 +40,85 @@ func watchNative(backendPath, frontendPath string) {
 		log.Error().Err(err).Str("path", frontendGenerated).Msg("failed to watch frontend generated")
 	}
 
-	log.Info().Msg("native macOS file watcher started (FSEvents via notify)")
+	if goOnly {
+		log.Info().Msg("native macOS file watcher started (FSEvents) - Go files only mode")
+	} else {
+		log.Info().Msg("native macOS file watcher started (FSEvents)")
+	}
 
-	// Process events
-	for ei := range c {
-		path := ei.Path()
-
-		// Convert to relative path for consistency
-		relPath, err := filepath.Rel(absPath, path)
-		if err != nil {
-			relPath = path
+	// Process events with context cancellation support
+	for {
+		select {
+		case <-ctx.Done():
+			log.Debug().Msg("native file watcher stopping...")
+			return
+		case ei, ok := <-c:
+			if !ok {
+				return
+			}
+			handleNativeEvent(ei, absPath, goOnly)
 		}
+	}
+}
 
-		// Skip excluded directories
-		if strings.Contains(relPath, "models/") || strings.Contains(relPath, ".idea") {
-			continue
-		}
+func handleNativeEvent(ei notify.EventInfo, absPath string, goOnly bool) {
+	path := ei.Path()
 
-		// Process write, create, and rename events (rename is used by atomic writes)
-		event := ei.Event()
-		if event&notify.Write == 0 && event&notify.Create == 0 && event&notify.Rename == 0 {
-			continue
-		}
+	// Convert to relative path for consistency
+	relPath, err := filepath.Rel(absPath, path)
+	if err != nil {
+		relPath = path
+	}
 
-		log.Debug().Str("file", relPath).Str("event", event.String()).Msg("modified file (FSEvents)")
+	// Skip excluded directories
+	if strings.Contains(relPath, "models/") || strings.Contains(relPath, ".idea") {
+		return
+	}
 
-		// Check for generated files
-		isGeneratedGo := strings.Contains(relPath, "generated_") &&
-			(strings.Contains(relPath, ".go") || strings.Contains(relPath, ".gohtml"))
-		if isGeneratedGo || strings.Contains(relPath, "__generated__/") {
-			log.Debug().Msg("generated files changed, skipping")
-			continue
-		}
+	// Process write, create, and rename events (rename is used by atomic writes)
+	event := ei.Event()
+	if event&notify.Write == 0 && event&notify.Create == 0 && event&notify.Rename == 0 {
+		return
+	}
 
-		// Handle file changes based on type
-		switch {
-		case strings.Contains(relPath, ".sql"):
-			log.Debug().Msg("sql changed, run migrations + convert plugin")
-			debounced(runSqlChanged)
-		case strings.Contains(relPath, ".graphql"):
-			log.Debug().Msg("run convert & merge schemas with relay")
-			debounced(runSchemaChanged)
-		case strings.Contains(relPath, "seed/"):
-			log.Debug().Msg("re-run seed.go")
-			debounced(runSeedChanged)
-		case strings.Contains(relPath, ".env") ||
-			strings.Contains(relPath, ".go") ||
-			strings.Contains(relPath, ".gohtml"):
-			log.Debug().Msg("restart server")
+	log.Debug().Str("file", relPath).Str("event", event.String()).Msg("modified file (FSEvents)")
+
+	// Check for generated files
+	isGeneratedGo := strings.Contains(relPath, "generated_") &&
+		(strings.Contains(relPath, ".go") || strings.Contains(relPath, ".gohtml"))
+	if isGeneratedGo || strings.Contains(relPath, "__generated__/") {
+		log.Debug().Msg("generated files changed, skipping")
+		return
+	}
+
+	// In goOnly mode, only restart server on Go file changes
+	if goOnly {
+		if strings.Contains(relPath, ".go") || strings.Contains(relPath, ".gohtml") || strings.Contains(relPath, ".env") {
+			log.Debug().Msg("restart server (go-only mode)")
 			debounced(runGoChanged)
-		case strings.Contains(relPath, "migrations/"):
-			log.Debug().Msg("run migrations + convert plugin")
-			debounced(runMigrationsChanged)
 		}
+		return
+	}
+
+	// Handle file changes based on type
+	switch {
+	case strings.Contains(relPath, ".sql"):
+		log.Debug().Msg("sql changed, run migrations + convert plugin")
+		debounced(runSqlChanged)
+	case strings.Contains(relPath, ".graphql"):
+		log.Debug().Msg("run convert & merge schemas with relay")
+		debounced(runSchemaChanged)
+	case strings.Contains(relPath, "seed/"):
+		log.Debug().Msg("re-run seed.go")
+		debounced(runSeedChanged)
+	case strings.Contains(relPath, ".env") ||
+		strings.Contains(relPath, ".go") ||
+		strings.Contains(relPath, ".gohtml"):
+		log.Debug().Msg("restart server")
+		debounced(runGoChanged)
+	case strings.Contains(relPath, "migrations/"):
+		log.Debug().Msg("run migrations + convert plugin")
+		debounced(runMigrationsChanged)
 	}
 }
 

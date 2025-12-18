@@ -2,10 +2,12 @@
 
 package main
 
+import "context"
+
 // watchNative is not available on non-macOS platforms
-func watchNative(backendPath, frontendPath string) {
+func watchNative(ctx context.Context, backendPath, frontendPath string, goOnly bool) {
 	// Fall back to fsnotify-based watcher
-	watch(backendPath, frontendPath)
+	watch(ctx, backendPath, frontendPath, goOnly)
 }
 
 // useNativeWatcher returns false on non-macOS platforms

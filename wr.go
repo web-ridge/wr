@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -21,6 +23,7 @@ import (
 	"github.com/urfave/cli/v2"
 	"github.com/web-ridge/wr/helpers"
 	"github.com/web-ridge/wr/specific"
+	"golang.org/x/term"
 )
 
 var (
@@ -40,8 +43,30 @@ func main() {
 	helpers.ConfigureLogger()
 
 	app := &cli.App{
-		Name:   "wr",
-		Usage:  "wr is an internal tool to improve developer experience at webRidge",
+		Name:  "wr",
+		Usage: "WebRidge dev tool - hot reload for Go/GraphQL projects",
+		Description: `Watches for file changes and automatically runs build steps:
+   .go/.gohtml/.env  → Restart server
+   .sql              → Drop DB + Migrate + Convert + Seed + Restart
+   .graphql          → Convert + Merge schemas + Relay
+   seed/             → Re-run seeder
+   migrations/       → Run migrations + Convert
+
+Keyboard shortcuts (always available during session):
+   r = Restart server    c = Run convert      s = Run seeder
+   m = Run migrations    a = Run all          h = Show help`,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:    "no-watch",
+				Aliases: []string{"n"},
+				Usage:   "Disable file watcher, use keyboard shortcuts only",
+			},
+			&cli.BoolFlag{
+				Name:    "go",
+				Aliases: []string{"g"},
+				Usage:   "Only watch Go files (no convert/seed/migrations on file change)",
+			},
+		},
 		Action: start,
 	}
 
@@ -51,15 +76,23 @@ func main() {
 }
 
 func start(c *cli.Context) error {
+	noWatch := c.Bool("no-watch")
+	goOnly := c.Bool("go")
+
 	log.Info().Msg(`
-               _     _____  _     _            
-              | |   |  __ \(_)   | |           
- __      _____| |__ | |__) |_  __| | __ _  ___ 
+               _     _____  _     _
+              | |   |  __ \(_)   | |
+ __      _____| |__ | |__) |_  __| | __ _  ___
  \ \ /\ / / _ \ '_ \|  _  /| |/ _` + "`" + ` |/ _` + "`" + ` |/ _ \
   \ V  V /  __/ |_) | | \ \| | (_| | (_| |  __/
    \_/\_/ \___|_.__/|_|  \_\_|\__,_|\__,_|\___|
-                                    |___/      
+                                    |___/
 `)
+	printKeyboardShortcuts()
+
+	// Set up context with cancellation for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Set up signal handling for Ctrl+C and termination
 	sigChan := make(chan os.Signal, 1)
@@ -70,6 +103,7 @@ func start(c *cli.Context) error {
 	// Cleanup function for graceful shutdown
 	defer func() {
 		log.Info().Msg("shutting down, cleaning up processes...")
+		cancel() // Signal all goroutines to stop
 		if existingServer != nil {
 			stopServer(existingServer)
 		}
@@ -104,15 +138,84 @@ func start(c *cli.Context) error {
 		log.Error().Msg("initial server start failed, continuing to watch for changes")
 	}
 
-	if useNativeWatcher() {
-		go watchNative(p.backend, p.frontend)
+	// Start file watcher unless --no-watch is set
+	if !noWatch {
+		if useNativeWatcher() {
+			go watchNative(ctx, p.backend, p.frontend, goOnly)
+		} else {
+			go watch(ctx, p.backend, p.frontend, goOnly)
+		}
 	} else {
-		go watch(p.backend, p.frontend)
+		log.Info().Msg("file watcher disabled, use keyboard shortcuts to trigger actions")
 	}
+
+	// Start keyboard input handler
+	keyChan := make(chan rune, 1)
+	go readKeyboardInput(ctx, keyChan)
 
 	// Main loop for restarts and signal handling
 	for {
 		select {
+		case key := <-keyChan:
+			switch key {
+			case 'r':
+				log.Info().Msg("⌨️  [r] restarting server...")
+				if existingServer != nil {
+					stopServer(existingServer)
+				}
+				killPortProcess(port)
+				existingServer = startServerInBackground(true)
+				if existingServer != nil {
+					log.Info().Msg("✅ server restarted")
+				}
+			case 'c':
+				log.Info().Msg("⌨️  [c] running convert...")
+				go func() {
+					if err := runConvertPlugin(); err != nil {
+						log.Error().Err(err).Msg("convert failed")
+					} else {
+						log.Info().Msg("✅ convert done")
+					}
+				}()
+			case 's':
+				log.Info().Msg("⌨️  [s] running seeder...")
+				go func() {
+					if err := runSeeder(); err != nil {
+						log.Error().Err(err).Msg("seeder failed")
+					} else {
+						log.Info().Msg("✅ seeder done")
+					}
+				}()
+			case 'm':
+				log.Info().Msg("⌨️  [m] running migrations...")
+				go func() {
+					if err := runMigrations(); err != nil {
+						log.Error().Err(err).Msg("migrations failed")
+					} else {
+						log.Info().Msg("✅ migrations done")
+					}
+				}()
+			case 'a':
+				log.Info().Msg("⌨️  [a] running all (migrate + convert + seed + restart)...")
+				go func() {
+					if err := runMigrations(); err != nil {
+						log.Error().Err(err).Msg("migrations failed")
+						return
+					}
+					if err := runConvertPlugin(); err != nil {
+						log.Error().Err(err).Msg("convert failed")
+						return
+					}
+					if err := runSeeder(); err != nil {
+						log.Error().Err(err).Msg("seeder failed")
+						return
+					}
+					restart <- true
+					log.Info().Msg("✅ all done")
+				}()
+			case 'h', '?':
+				printKeyboardShortcuts()
+			}
 		case <-restart:
 			log.Debug().Msg("restarting backend...")
 			if existingServer != nil {
@@ -256,8 +359,30 @@ func startServerInBackground(restart bool) *exec.Cmd {
 	return cmd
 }
 
+func getComposeProjectName() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	// Use the parent directory name (app name) as project name
+	// Structure: /org/app/backend -> we want "app"
+	parentDir := filepath.Dir(cwd)
+	appName := filepath.Base(parentDir)
+	// Docker compose project names must be lowercase and can only contain [a-z0-9_-]
+	appName = strings.ToLower(appName)
+	appName = strings.ReplaceAll(appName, " ", "-")
+	return appName
+}
+
 func startDbInDocker() *exec.Cmd {
-	cmd := exec.Command("docker", "compose", "up", "-d", "db")
+	projectName := getComposeProjectName()
+	var cmd *exec.Cmd
+	if projectName != "" {
+		cmd = exec.Command("docker", "compose", "-p", projectName, "up", "-d", "db")
+		log.Debug().Str("project", projectName).Msg("starting docker compose with project name")
+	} else {
+		cmd = exec.Command("docker", "compose", "up", "-d", "db")
+	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		sendNotification("DB Error", "failed to start db")
@@ -267,7 +392,13 @@ func startDbInDocker() *exec.Cmd {
 }
 
 func stopDocker() {
-	cmd := exec.Command("docker", "compose", "down")
+	projectName := getComposeProjectName()
+	var cmd *exec.Cmd
+	if projectName != "" {
+		cmd = exec.Command("docker", "compose", "-p", projectName, "down")
+	} else {
+		cmd = exec.Command("docker", "compose", "down")
+	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		log.Error().Err(err).Msg("failed to stop docker containers")
@@ -367,34 +498,12 @@ func runSeeder() error {
 	return cmd.Run()
 }
 
-func watch(backendPath, frontendPath string) {
+func watch(ctx context.Context, backendPath, frontendPath string, goOnly bool) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal().Err(err).Msg("cannot start file watcher")
 	}
 	defer watcher.Close()
-
-	done := make(chan bool)
-	go func() {
-		for {
-			select {
-			case event, ok := <-watcher.Events:
-				if !ok {
-					return
-				}
-				if event.Op&fsnotify.Write == fsnotify.Write ||
-					event.Op&fsnotify.Create == fsnotify.Create ||
-					event.Op&fsnotify.Rename == fsnotify.Rename {
-					fileChanged(event)
-				}
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					return
-				}
-				log.Error().Err(err).Msg("error while watching files")
-			}
-		}
-	}()
 
 	watchPaths := append(getDirectoryWithSubDirectories(),
 		"../frontend/schema_custom.graphql",
@@ -406,7 +515,33 @@ func watch(backendPath, frontendPath string) {
 		}
 	}
 
-	<-done
+	if goOnly {
+		log.Info().Msg("file watcher started (fsnotify) - Go files only mode")
+	} else {
+		log.Info().Msg("file watcher started (fsnotify)")
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Debug().Msg("file watcher stopping...")
+			return
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&fsnotify.Write == fsnotify.Write ||
+				event.Op&fsnotify.Create == fsnotify.Create ||
+				event.Op&fsnotify.Rename == fsnotify.Rename {
+				fileChanged(event, goOnly)
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			log.Error().Err(err).Msg("error while watching files")
+		}
+	}
 }
 
 var debounced = debounce.New(200 * time.Millisecond)
@@ -460,13 +595,22 @@ func runMigrationsChanged() {
 	restart <- true
 }
 
-func fileChanged(event fsnotify.Event) {
+func fileChanged(event fsnotify.Event, goOnly bool) {
 	log.Debug().Str("file", event.Name).Msg("modified file")
 
 	isGeneratedGo := strings.Contains(event.Name, "generated_") &&
 		(strings.Contains(event.Name, ".go") || strings.Contains(event.Name, ".gohtml"))
 	if isGeneratedGo || strings.Contains(event.Name, "__generated__/") {
 		log.Debug().Msg("generated files changed, skipping")
+		return
+	}
+
+	// In goOnly mode, only restart server on Go file changes
+	if goOnly {
+		if strings.Contains(event.Name, ".go") || strings.Contains(event.Name, ".gohtml") || strings.Contains(event.Name, ".env") {
+			log.Debug().Msg("restart server (go-only mode)")
+			debounced(runGoChanged)
+		}
 		return
 	}
 
@@ -506,4 +650,61 @@ func getDirectoryWithSubDirectories() []string {
 		log.Fatal().Err(err).Msg("could not get dir with sub dirs")
 	}
 	return dirs
+}
+
+func printKeyboardShortcuts() {
+	fmt.Println("\n┌─────────────────────────────────────┐")
+	fmt.Println("│         Keyboard Shortcuts          │")
+	fmt.Println("├─────────────────────────────────────┤")
+	fmt.Println("│  r  - Restart server                │")
+	fmt.Println("│  c  - Run convert                   │")
+	fmt.Println("│  s  - Run seeder                    │")
+	fmt.Println("│  m  - Run migrations                │")
+	fmt.Println("│  a  - Run all (migrate+convert+seed)│")
+	fmt.Println("│  h  - Show this help                │")
+	fmt.Println("│ ^C  - Quit                          │")
+	fmt.Println("└─────────────────────────────────────┘\n")
+}
+
+func readKeyboardInput(ctx context.Context, keyChan chan<- rune) {
+	// Try to set terminal to raw mode for single keypress reading
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		// Fallback to line-buffered input if raw mode fails
+		log.Debug().Msg("raw terminal mode not available, using line-buffered input")
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					return
+				}
+				if len(line) > 0 {
+					keyChan <- rune(line[0])
+				}
+			}
+		}
+	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+	buf := make([]byte, 1)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			n, err := os.Stdin.Read(buf)
+			if err != nil || n == 0 {
+				continue
+			}
+			key := rune(buf[0])
+			// Ignore control characters except Ctrl+C (handled by signal)
+			if key >= 32 && key < 127 {
+				keyChan <- key
+			}
+		}
+	}
 }

@@ -5,16 +5,14 @@ package specific
 
 import (
 	"os/exec"
-	"strconv"
+	"syscall"
 
 	"github.com/rs/zerolog/log"
 )
 
 func Kill(existingServer *exec.Cmd) {
-
-	// On Windows, use taskkill to kill the process by PID
-	cmd := exec.Command("taskkill", "/F", "/PID", strconv.Itoa(existingServer.Process.Pid))
-	if err := cmd.Run(); err != nil {
-		log.Error().Err(err).Msg("Failed to kill server process")
+	// On Linux, use syscall.Kill to kill the process group (negative PID)
+	if err := syscall.Kill(-existingServer.Process.Pid, syscall.SIGKILL); err != nil {
+		log.Error().Err(err).Msg("Failed to kill server process group")
 	}
 }
