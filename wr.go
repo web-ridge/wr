@@ -54,8 +54,7 @@ func main() {
 
 Keyboard shortcuts (always available during session):
    r = Restart server    c = Run convert      s = Run seeder
-   m = Run migrations    a = Run all          k = Kill other wr instances
-   h = Show help`,
+   m = Run migrations    a = Run all          h = Show help`,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:    "no-watch",
@@ -66,6 +65,11 @@ Keyboard shortcuts (always available during session):
 				Name:    "go",
 				Aliases: []string{"g"},
 				Usage:   "Only watch Go files (no convert/seed/migrations on file change)",
+			},
+			&cli.BoolFlag{
+				Name:    "kill",
+				Aliases: []string{"k"},
+				Usage:   "Kill other wr instances before starting",
 			},
 		},
 		Action: start,
@@ -79,6 +83,15 @@ Keyboard shortcuts (always available during session):
 func start(c *cli.Context) error {
 	noWatch := c.Bool("no-watch")
 	goOnly := c.Bool("go")
+	killOthers := c.Bool("kill")
+
+	// Kill other wr instances if requested
+	if killOthers {
+		killed := killOtherWrInstances()
+		if killed > 0 {
+			log.Info().Int("count", killed).Msg("killed other wr instances")
+		}
+	}
 
 	log.Info().Msg(`
                _     _____  _     _
@@ -214,14 +227,6 @@ func start(c *cli.Context) error {
 					restart <- true
 					log.Info().Msg("✅ all done")
 				}()
-			case 'k':
-				log.Info().Msg("⌨️  [k] killing other wr instances...")
-				killed := killOtherWrInstances()
-				if killed > 0 {
-					log.Info().Int("count", killed).Msg("✅ killed other wr instances")
-				} else {
-					log.Info().Msg("no other wr instances found")
-				}
 			case 'h', '?':
 				printKeyboardShortcuts()
 			}
@@ -706,7 +711,6 @@ func printKeyboardShortcuts() {
 	fmt.Println("│  s  - Run seeder                         │")
 	fmt.Println("│  m  - Run migrations                     │")
 	fmt.Println("│  a  - Run all (migrate+convert+seed)     │")
-	fmt.Println("│  k  - Kill other wr instances            │")
 	fmt.Println("│  h  - Show this help                     │")
 	fmt.Println("│ ^C  - Quit                               │")
 	fmt.Println("└──────────────────────────────────────────┘\n")
