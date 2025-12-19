@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -53,7 +54,8 @@ func main() {
 
 Keyboard shortcuts (always available during session):
    r = Restart server    c = Run convert      s = Run seeder
-   m = Run migrations    a = Run all          h = Show help`,
+   m = Run migrations    a = Run all          k = Kill other wr instances
+   h = Show help`,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:    "no-watch",
@@ -212,6 +214,14 @@ func start(c *cli.Context) error {
 					restart <- true
 					log.Info().Msg("✅ all done")
 				}()
+			case 'k':
+				log.Info().Msg("⌨️  [k] killing other wr instances...")
+				killed := killOtherWrInstances()
+				if killed > 0 {
+					log.Info().Int("count", killed).Msg("✅ killed other wr instances")
+				} else {
+					log.Info().Msg("no other wr instances found")
+				}
 			case 'h', '?':
 				printKeyboardShortcuts()
 			}
@@ -416,6 +426,40 @@ func killPortProcess(port string) {
 	if err := cmd.Run(); err != nil {
 		log.Debug().Err(err).Msg("error killing port process")
 	}
+}
+
+func killOtherWrInstances() int {
+	currentPid := os.Getpid()
+	killed := 0
+
+	if runtime.GOOS == "windows" {
+		// On Windows, use tasklist and taskkill
+		cmd := exec.Command("powershell", "-Command",
+			fmt.Sprintf("Get-Process -Name wr -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne %d } | Stop-Process -Force", currentPid))
+		if err := cmd.Run(); err == nil {
+			killed++ // Can't easily count on Windows
+		}
+	} else {
+		// On Unix, use pgrep to find wr processes and kill them
+		cmd := exec.Command("pgrep", "-x", "wr")
+		output, err := cmd.Output()
+		if err != nil {
+			return 0
+		}
+		pids := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, pidStr := range pids {
+			pid, err := strconv.Atoi(pidStr)
+			if err != nil || pid == currentPid {
+				continue
+			}
+			if proc, err := os.FindProcess(pid); err == nil {
+				if err := proc.Kill(); err == nil {
+					killed++
+				}
+			}
+		}
+	}
+	return killed
 }
 
 func runInitialSetup() error {
@@ -662,6 +706,7 @@ func printKeyboardShortcuts() {
 	fmt.Println("│  s  - Run seeder                         │")
 	fmt.Println("│  m  - Run migrations                     │")
 	fmt.Println("│  a  - Run all (migrate+convert+seed)     │")
+	fmt.Println("│  k  - Kill other wr instances            │")
 	fmt.Println("│  h  - Show this help                     │")
 	fmt.Println("│ ^C  - Quit                               │")
 	fmt.Println("└──────────────────────────────────────────┘\n")
