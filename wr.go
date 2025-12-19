@@ -456,8 +456,8 @@ func dropDatabase() error {
 }
 
 func runConvertPlugin() error {
-	log.Debug().Msg("run convert/convert.go")
-	cmd := exec.Command("go", "run", "convert.go")
+	log.Debug().Msg("run ./convert")
+	cmd := exec.Command("go", "run", ".")
 	cmd.Dir = "./convert"
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -488,8 +488,8 @@ func runRelay() error {
 }
 
 func runSeeder() error {
-	log.Debug().Msg("run seed/seed.go")
-	cmd := exec.Command("go", "run", "seed.go")
+	log.Debug().Msg("run ./seed")
+	cmd := exec.Command("go", "run", ".")
 	cmd.Dir = "./seed"
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
