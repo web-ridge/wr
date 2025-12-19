@@ -339,6 +339,7 @@ func startServerInBackground(restart bool) *exec.Cmd {
 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Stdin = nil // Don't inherit stdin, it's used for keyboard shortcuts
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Ensure process group is set for proper cleanup
 
 	go func() {
@@ -668,16 +669,28 @@ func printKeyboardShortcuts() {
 
 func readKeyboardInput(ctx context.Context, keyChan chan<- rune) {
 	reader := bufio.NewReader(os.Stdin)
+	lineChan := make(chan string)
+
+	// Read lines in a separate goroutine
+	go func() {
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				close(lineChan)
+				return
+			}
+			lineChan <- strings.TrimSpace(line)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-			line, err := reader.ReadString('\n')
-			if err != nil {
+		case line, ok := <-lineChan:
+			if !ok {
 				return
 			}
-			line = strings.TrimSpace(line)
 			if len(line) > 0 {
 				keyChan <- rune(line[0])
 			}
