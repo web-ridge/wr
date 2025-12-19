@@ -363,10 +363,11 @@ func getComposeProjectName() string {
 	if err != nil {
 		return ""
 	}
-	// Use the parent directory name (app name) as project name
-	// Structure: /org/app/backend -> we want "app"
-	parentDir := filepath.Dir(cwd)
-	appName := filepath.Base(parentDir)
+	// Use the grandparent directory name (project name) as project name
+	// Structure: /photopilot/application/backend -> we want "photopilot"
+	parentDir := filepath.Dir(cwd)           // /photopilot/application
+	grandparentDir := filepath.Dir(parentDir) // /photopilot
+	appName := filepath.Base(grandparentDir)
 	// Docker compose project names must be lowercase and can only contain [a-z0-9_-]
 	appName = strings.ToLower(appName)
 	appName = strings.ReplaceAll(appName, " ", "-")
