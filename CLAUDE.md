@@ -54,11 +54,6 @@ wr --no-watch   # Manual mode: no file watcher, use keyboard shortcuts
 - `runSeeder()` - Runs `seed/seed.go` to populate test data
 - `runMergeSchemasWithRelay()` - Merges GraphQL schemas and runs Relay compiler
 
-## Docker Compose
-Each project gets isolated containers using the app directory name as project name:
-- `/org/photopilot/backend` → containers prefixed with `photopilot-`
-- `/org/other-app/backend` → containers prefixed with `other-app-`
-
 ## Dependencies
 - Go 1.21+
 - Bun (for frontend tooling)
@@ -73,4 +68,3 @@ The watcher debounces file changes (200ms) to avoid duplicate runs.
 ## Common Issues
 - **Server won't restart**: Press `r` to manually restart
 - **Database out of sync**: Press `a` to run full rebuild
-- **Multiple instances conflict**: Each app uses unique Docker project name based on parent directory

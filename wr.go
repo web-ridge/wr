@@ -374,31 +374,8 @@ func startServerInBackground(restart bool) *exec.Cmd {
 	return cmd
 }
 
-func getComposeProjectName() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	// Use the grandparent directory name (project name) as project name
-	// Structure: /photopilot/application/backend -> we want "photopilot"
-	parentDir := filepath.Dir(cwd)           // /photopilot/application
-	grandparentDir := filepath.Dir(parentDir) // /photopilot
-	appName := filepath.Base(grandparentDir)
-	// Docker compose project names must be lowercase and can only contain [a-z0-9_-]
-	appName = strings.ToLower(appName)
-	appName = strings.ReplaceAll(appName, " ", "-")
-	return appName
-}
-
 func startDbInDocker() *exec.Cmd {
-	projectName := getComposeProjectName()
-	var cmd *exec.Cmd
-	if projectName != "" {
-		cmd = exec.Command("docker", "compose", "-p", projectName, "up", "-d", "db")
-		log.Debug().Str("project", projectName).Msg("starting docker compose with project name")
-	} else {
-		cmd = exec.Command("docker", "compose", "up", "-d", "db")
-	}
+	cmd := exec.Command("docker", "compose", "up", "-d")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		sendNotification("DB Error", "failed to start db")
@@ -408,13 +385,7 @@ func startDbInDocker() *exec.Cmd {
 }
 
 func stopDocker() {
-	projectName := getComposeProjectName()
-	var cmd *exec.Cmd
-	if projectName != "" {
-		cmd = exec.Command("docker", "compose", "-p", projectName, "down")
-	} else {
-		cmd = exec.Command("docker", "compose", "down")
-	}
+	cmd := exec.Command("docker", "compose", "down")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		log.Error().Err(err).Msg("failed to stop docker containers")
