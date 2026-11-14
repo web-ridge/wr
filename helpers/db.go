@@ -30,12 +30,29 @@ func getConnectionString() string {
 	)
 }
 
+// DatabaseReachable reports whether the configured database answers right now
+// (one ping, a few seconds at most). wr uses it to skip Docker when a native
+// MySQL already serves DATABASE_HOST:DATABASE_PORT.
+func DatabaseReachable() bool {
+	for _, requiredEnvName := range requiredDatabaseEnvs {
+		if os.Getenv(requiredEnvName) == "" {
+			return false
+		}
+	}
+	db, err := sql.Open("mysql", getConnectionString()+"&timeout=3s")
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+	return db.Ping() == nil
+}
+
 func WaitForDatabase() *sql.DB {
 	defer func() {
 		log.Debug().Msg("database connection is ready :)")
 	}()
 	for {
-		log.Debug().Msg("waiting for database connection... (if this is running for long, check if docker has been started)")
+		log.Debug().Msg("waiting for database connection... (if this is running for long, check that your local MySQL or Docker is running)")
 
 		for _, requiredEnvName := range requiredDatabaseEnvs {
 			if os.Getenv(requiredEnvName) == "" {
