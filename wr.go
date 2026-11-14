@@ -137,8 +137,14 @@ func start(c *cli.Context) error {
 		return fmt.Errorf("install dependencies: %w", err)
 	}
 
-	dockerCmd = startDbInDocker()
-	time.Sleep(1 * time.Second)
+	// A native MySQL on DATABASE_HOST:DATABASE_PORT wins: then Docker is not
+	// needed (and not stopped on exit). Otherwise start docker compose as before.
+	if helpers.DatabaseReachable() {
+		log.Info().Msg("database already reachable, not starting docker compose")
+	} else {
+		dockerCmd = startDbInDocker()
+		time.Sleep(1 * time.Second)
+	}
 	db = helpers.WaitForDatabase()
 
 	if err := runInitialSetup(); err != nil {
@@ -379,7 +385,7 @@ func startDbInDocker() *exec.Cmd {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		sendNotification("DB Error", "failed to start db")
-		log.Fatal().Err(err).Msg("failed to start db")
+		log.Fatal().Err(err).Msg("failed to start db: start your local MySQL on DATABASE_HOST:DATABASE_PORT, or Docker")
 	}
 	return cmd
 }
@@ -684,7 +690,7 @@ func printKeyboardShortcuts() {
 	fmt.Println("│  a  - Run all (migrate+convert+seed)     │")
 	fmt.Println("│  h  - Show this help                     │")
 	fmt.Println("│ ^C  - Quit                               │")
-	fmt.Println("└──────────────────────────────────────────┘\n")
+	fmt.Print("└──────────────────────────────────────────┘\n\n")
 }
 
 func readKeyboardInput(ctx context.Context, keyChan chan<- rune) {
